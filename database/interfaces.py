@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
 
 class BaseStore(ABC):
     """底层存储的抽象基类"""
@@ -10,13 +10,20 @@ class BaseStore(ABC):
         pass
 
     @abstractmethod
-    def insert(self, chunks: List[Dict[str, Any]]) -> bool:
+    def insert(self, chunks: List[Any]) -> bool:
         """执行数据插入，返回布尔值以配合一致性校验"""
         pass
 
 class VectorStoreInterface(BaseStore):
     """向量数据库专用的高级检索接口"""
-    
+    def __init__(self,embed_model: Any):
+        pass
+
+    @abstractmethod
+    def delete_batch(self, ids: List[str]): 
+        """必须在接口中声明，以支持 Manager 的补偿回滚逻辑"""
+        pass
+
     @abstractmethod
     def search_by_vector(self, query_vector: List[float], top_k: int = 5):
         """语义搜索"""
@@ -34,6 +41,11 @@ class BaseStatusRegistry(ABC):
     @abstractmethod
     def is_file_processed(self, file_name: str) -> bool:
         """检查整个文件是否已完成"""
+        pass
+
+    @abstractmethod
+    def mark_chunks_processed(self, file_name: str, chunk_ids: List[str]):
+        """标记某个文件已完成的 chunk_id 集合"""
         pass
 
     @abstractmethod

@@ -1,1 +1,4 @@
 data/*
+.vscode/*
+.env
+*/__pycache__/*

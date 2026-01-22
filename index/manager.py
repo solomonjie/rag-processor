@@ -1,7 +1,6 @@
 import logging
 from typing import List, Dict, Any, Optional
 from database.interfaces import VectorStoreInterface, KeywordStoreInterface, BaseStatusRegistry
-from database.memoryRegistry_impl import MemoryStatusRegistry
 
 class IngestionManager:
     def __init__(
@@ -17,7 +16,7 @@ class IngestionManager:
         self.strict_consistency = strict_consistency
         self.logger = logging.getLogger(__name__)
 
-    def process_file_batches(self, file_name: str, file_hash: str, chunks: List[Dict[str, Any]], batch_size: int = 50):
+    def process_file_batches(self, file_name: str, file_hash: str, chunks: List[Any], batch_size: int = 50):
         """处理文件级别的批量入库逻辑"""
         # 1. 检查文件是否整体已完成
         if self.registry and self.registry.is_file_processed(file_name):
