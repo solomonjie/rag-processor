@@ -14,7 +14,7 @@ def run_ingestion_pipeline(file_data: dict):
     registry = MemoryStatusRegistry()
     emb_model = TextEmbeddingService()
     manager = IngestionManager(
-        vector_store=ChromadbServices(emb_model), 
+        vector_store=ChromadbServices(emb_model.embed_model), 
         keyword_store=ElasticServices(),
         registry=registry
     )
@@ -25,11 +25,14 @@ def run_ingestion_pipeline(file_data: dict):
     chunks = file_data
 
     manager.process_file_batches(
+        index_name="test_index",
         file_name=file_name,
         file_hash=file_hash,
         chunks=chunks,
         batch_size=5
     )
+
+    print("Done")
 
 if __name__ == "__main__":
     # 检查是否传入了文件路径
@@ -45,10 +48,10 @@ if __name__ == "__main__":
             doc = Document(
                 text=block["content"],
                 metadata={
-                    "block_id": block["block_id"],
-                    "block_type": block["block_type"],
-                    "title": block["title"],
-                    "keywords": block.get("keywords", [])
+                    "block_id": int(block["block_id"]),
+                    "block_type": str(block["block_type"]),
+                    "title": str(block["title"]),
+                    "keywords": "|".join(block.get("keywords", []))
                     }
                     )
             documents.append(doc)

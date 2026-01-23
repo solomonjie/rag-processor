@@ -17,7 +17,7 @@ class ChromadbServices(VectorStoreInterface):
         self._embed_model = embed_model
 
     def connect(self, config: Dict[str, Any]):
-        chroma_collection = self._get_collection(config["collection_name"])
+        chroma_collection = self._get_collection(config["index_name"])
         storage = ChromaVectorStore(chroma_collection=chroma_collection)
         self.index = self._safe_initialize_index(storage, self._embed_model)
 
