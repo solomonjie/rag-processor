@@ -1,12 +1,11 @@
 import logging
 import time
 from typing import List, Dict, Any, Optional
-from Files.ContentLoaderFactory import ContentLoader
+from files.ContentLoaderFactory import ContentLoader
 from database.interfaces import MessageQueueInterface, VectorStoreInterface, KeywordStoreInterface, BaseStatusRegistry
 from database.message import IngestionTaskSchema
-from llama_index.core.schema import BaseNode
-from llama_index.core import Document
-from llama_index.core.node_parser import SentenceSplitter
+from logfilter.logging_context import trace_id_var
+from llama_index.core.schema import TextNode
 
 class IngestionManager:
     def __init__(
@@ -45,28 +44,16 @@ class IngestionManager:
         try:
             # 1. 使用 Schema 自动验证并解析消息内容
             task = IngestionTaskSchema.model_validate_json(raw_message)
+            token = trace_id_var.set(task.file_hash)
+
             self.logger.info(f"收到合法任务: {task.file_name}")
 
             # 2. 从消息指定的路径读取真实的内容文件,并转换为chunks
             raw_content =self.loader.load_content(task.file_path)
-            documents = []
-            for block in raw_content:
-                doc = Document(
-                    text=block["content"],
-                    metadata={
-                    "block_id": int(block["block_id"]),
-                    "block_type": str(block["block_type"]),
-                    "title": str(block["title"]),
-                    "keywords": "|".join(block.get("keywords", []))
-                    }
-                    )
-                documents.append(doc)
-            
-            parser = SentenceSplitter(
-                chunk_size = 10000,
-                chunk_overlap=0        
-            )
-            nodes = parser.get_nodes_from_documents(documents)
+            self.logger.info("loaded %d chunks", len(raw_content))
+
+            nodes = self._build_nodes(raw_content, task)
+            self.logger.info("built %d nodes", len(nodes))
 
             # 3. 将数据插入数据库中
             success = self._process_file_batches(
@@ -79,11 +66,37 @@ class IngestionManager:
             if success:
                 self.logger.info(f"任务完成: {task.file_name}")
                 # 后续可以在这里通过 mq 确认消息（ACK）或删除临时文件
-
         except Exception as e:
             self.logger.error(f"任务处理异常: {str(e)}")
+        finally:
+            if token is not None:
+                trace_id_var.reset(token)
 
-    def _process_file_batches(self, index_name: str, file_name: str, file_hash: str, chunks: List[BaseNode], batch_size: int = 50):
+    def _build_nodes(self, raw_content: List[Dict[str, Any]], task: IngestionTaskSchema) -> List[TextNode]:
+        nodes = []
+        
+        for block in raw_content:
+            # 构造一个稳定、可追溯的 chunk_id
+            chunk_id = f"{task.file_hash}:{block['block_id']}"
+        
+            node = TextNode(
+                id_=chunk_id,          
+                text=block["content"], 
+                metadata={
+                    "file_name": task.file_name,
+                    "file_hash": task.file_hash,
+                    "block_id": block["block_id"],
+                    "block_type": block["block_type"],
+                    "title": block["title"],
+                    "keywords":  "|".join(block.get("keywords", [])),
+                    "semantic_embedding_keywords": "|".join(block.get("semantic_embedding_keywords", []))
+                }
+            )
+        
+            nodes.append(node)
+        return nodes   
+
+    def _process_file_batches(self, index_name: str, file_name: str, file_hash: str, chunks: List[TextNode], batch_size: int = 50) -> bool:
         """处理文件级别的批量入库逻辑"""
         # 1. 检查文件是否整体已完成
         if self.registry and self.registry.is_file_processed(file_name):
@@ -125,3 +138,5 @@ class IngestionManager:
         # 5. 文件所有 chunk 处理完，标记文件完成并清理 chunk 记录
         if self.registry:
             self.registry.mark_file_complete(file_name, file_hash)
+
+        return True
