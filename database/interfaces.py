@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Optional, Set
 
 class BaseStore(ABC):
     """底层存储的抽象基类"""
@@ -56,4 +56,29 @@ class BaseStatusRegistry(ABC):
     @abstractmethod
     def mark_file_complete(self, file_name: str, file_hash: str):
         """当所有 chunk 完成后，记录文件级索引并清理 chunk 记录"""
+        pass
+
+class MessageQueueInterface(ABC):
+    @abstractmethod
+    def connect(self, config: Dict[str, Any]):
+        """建立连接并绑定 Topic/Queue"""
+        pass
+
+    @abstractmethod
+    def consume(self) -> Optional[Any]:
+        """获取消息"""
+        pass
+
+    @abstractmethod
+    def produce(self, message: Any):
+        """发送消息"""
+        pass
+
+    @abstractmethod
+    def close(self):
+        """
+        显式关闭连接。
+        对于 Kafka：触发 Offset 提交并停止心跳。
+        对于内存队列：清空缓存数据。
+        """
         pass
