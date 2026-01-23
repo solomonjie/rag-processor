@@ -1,4 +1,5 @@
-from Files.ContentLoaderFactory import ContentLoader
+import logging
+from files.ContentLoaderFactory import ContentLoader
 from database.MemoryMessageQueue import MemoryMessageQueue
 from database.ChromadbVectorStorage import ChromadbServices
 from database.ElasticKeywordStorage import ElasticServices
@@ -6,6 +7,7 @@ from database.message import IngestionTaskSchema
 from index.manager import IngestionManager
 from embedding.TextEmbeddingsInference import TextEmbeddingService
 from database.memoryRegistry_impl import MemoryStatusRegistry
+from logfilter.logging_context import TraceIdFilter
 import sys
 
 def run_ingestion_pipeline(file_path: str):
@@ -49,4 +51,12 @@ if __name__ == "__main__":
         print("Usage: python orchestration.py <path_to_json_file>")
         sys.exit(1)
     
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(trace_id)s | %(name)s | %(message)s"
+    )
+    
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        handler.addFilter(TraceIdFilter())
     run_ingestion_pipeline(sys.argv[1])
