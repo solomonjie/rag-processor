@@ -1,5 +1,4 @@
 import logging
-from files.ContentLoaderFactory import ContentLoader
 from database.MemoryMessageQueue import MemoryMessageQueue
 from database.ChromadbVectorStorage import ChromadbServices
 from database.ElasticKeywordStorage import ElasticServices
@@ -14,12 +13,10 @@ def run_ingestion_pipeline(file_path: str):
     # 1. 组装依赖 (DI)
     registry = MemoryStatusRegistry()
     emb_model = TextEmbeddingService()
-    file_loader = ContentLoader()
     mq = MemoryMessageQueue()
     v_storage = ChromadbServices(emb_model.embed_model)
     manager = IngestionManager(
         mq=mq,
-        loader= file_loader,
         vector_store=v_storage, 
         keyword_store=ElasticServices(),
         registry=registry
@@ -42,8 +39,6 @@ def run_ingestion_pipeline(file_path: str):
     
     # 3. 调用编排逻辑
     manager.start_listening(mq_config)
-
-    print("Done")
 
 if __name__ == "__main__":
     # 检查是否传入了文件路径

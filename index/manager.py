@@ -1,9 +1,11 @@
+from contextlib import closing
 import logging
 import time
 from typing import List, Dict, Any, Optional
 from files.ContentLoaderFactory import ContentLoader
 from database.interfaces import MessageQueueInterface, VectorStoreInterface, KeywordStoreInterface, BaseStatusRegistry
 from database.message import IngestionTaskSchema
+from files.ParserFactory import ParserFactory
 from logfilter.logging_context import trace_id_var
 from llama_index.core.schema import TextNode
 
@@ -11,7 +13,6 @@ class IngestionManager:
     def __init__(
         self, 
         mq: MessageQueueInterface,
-        loader: ContentLoader,
         vector_store: Optional[VectorStoreInterface] = None, 
         keyword_store: Optional[KeywordStoreInterface] = None,
         registry: Optional[BaseStatusRegistry] = None,
@@ -23,7 +24,6 @@ class IngestionManager:
         self.registry = registry
         self.strict_consistency = strict_consistency
         self.mq = mq
-        self.loader = loader
         
 
     def start_listening(self, mq_config: dict):
@@ -49,10 +49,15 @@ class IngestionManager:
             self.logger.info(f"收到合法任务: {task.file_name}")
 
             # 2. 从消息指定的路径读取真实的内容文件,并转换为chunks
-            raw_content =self.loader.load_content(task.file_path)
-            self.logger.info("loaded %d chunks", len(raw_content))
+            raw_content = ContentLoader.load_content(task.file_path)
+            with closing(raw_content) as stream:
+                # 拿到流后，交给 Factory 和 Parser 
+                parser = ParserFactory.get_parser(task.file_path)
+                raw_data = parser.parse(stream)
 
-            nodes = self._build_nodes(raw_content, task)
+            self.logger.info("loaded %d chunks", len(raw_data))
+
+            nodes = self._build_nodes(raw_data, task)
             self.logger.info("built %d nodes", len(nodes))
 
             # 3. 将数据插入数据库中
