@@ -9,6 +9,8 @@ from database.memoryRegistry_impl import MemoryStatusRegistry
 from logfilter.logging_context import TraceIdFilter
 import sys
 
+from rawclean.manager import CleanManager
+
 def run_ingestion_pipeline(file_path: str):
     # 1. 组装依赖 (DI)
     registry = MemoryStatusRegistry()
@@ -40,6 +42,18 @@ def run_ingestion_pipeline(file_path: str):
     # 3. 调用编排逻辑
     manager.start_listening(mq_config)
 
+def run_clean_pipeline(file_path:str):
+    mq = MemoryMessageQueue()
+    mq_config = {"topic": "clean_flow"}
+    manager = CleanManager(
+        publisher=mq,
+        mq_config=mq_config
+    )
+    save_path = "data/step2.json"
+    manager.process_document(file_path, save_path)
+    print("Clean Done")
+    
+
 if __name__ == "__main__":
     # 检查是否传入了文件路径
     if len(sys.argv) < 2:
@@ -54,4 +68,4 @@ if __name__ == "__main__":
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
         handler.addFilter(TraceIdFilter())
-    run_ingestion_pipeline(sys.argv[1])
+    run_clean_pipeline(sys.argv[1])

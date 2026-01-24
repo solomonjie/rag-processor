@@ -1,12 +1,14 @@
 from typing import Any, Dict, Type
 
-from rawclean.ExcelClean import ExcelCleaner
-from rawclean.interface import BaseCleaner
+from .ExcelClean import ExcelCleaner
+from .JsonClean import JsonCleaner
+from .interface import BaseCleaner
 
 class CleanerFactory:
     _CLEANERS: Dict[str, Type[BaseCleaner]] = {
         ".xlsx": ExcelCleaner,
         ".xls": ExcelCleaner,
+        ".json":JsonCleaner,
     }
 
     @classmethod

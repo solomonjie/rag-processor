@@ -19,15 +19,11 @@ class CleanManager:
 
     def __init__(
         self, 
-        loader:ContentLoader,      # 负责读取原始字节流
-        saver:ContentSaver,       # 负责存储标准化后的 JSON
         publisher:MessageQueueInterface,   # 负责分发下游消息
         mq_config: Dict[str, Any] #包含 topic 等配置
     ):
         # 依赖注入：Manager 不关心这些组件的具体实现（本地还是云端）
         self.logger = logging.getLogger(__name__)
-        self.loader = loader
-        self.saver = saver
         self.publisher = publisher
         self.setup_mq(mq_config)
         
@@ -41,7 +37,7 @@ class CleanManager:
             self.logger.error(f"消息队列连接失败: {e}")
             raise
 
-    def process_document(self, source_path: str, storage_type: str = "local"):
+    def process_document(self, source_path: str, storage_path: str):
         """
         处理单个文档的完整生命周期
         :param source_path: 原始文件路径或 URL
@@ -52,7 +48,7 @@ class CleanManager:
         try:
             # 1. 依赖 Loader 获取原始字节流 (BytesIO)
             # 根据 storage_type 调用不同的加载逻辑
-            raw_stream = self.loader.load_content(source_path)
+            raw_stream = ContentLoader.load_content(source_path)
             file_ext = os.path.splitext(source_path)[1].lower()
 
             # 2. 核心：使用 closing 确保 stream 无论成功失败都会被关闭
@@ -72,7 +68,7 @@ class CleanManager:
 
             # 5. 存储标准化后的数据
             # 这里的 saver 可以根据逻辑存到不同地方
-            saved_uri = self.saver.to_local(cleaned_content, source_path)
+            saved_uri = ContentSaver.save_content(cleaned_content, storage_path)
 
             # 6. 发布消息通知下游（第二阶段：分段任务）
             message_payload = {
