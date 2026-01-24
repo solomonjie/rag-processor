@@ -65,24 +65,23 @@ class CleanManager:
                 cleaned_content = cleaner.clean(raw_data)
 
             # --- Stream 此时已关闭，释放内存/句柄 ---
-
-            # 5. 存储标准化后的数据
-            # 这里的 saver 可以根据逻辑存到不同地方
-            saved_uri = ContentSaver.save_content(cleaned_content, storage_path)
-
-            # 6. 发布消息通知下游（第二阶段：分段任务）
-            message_payload = {
-                "job_id": str(uuid.uuid4()), # 建议生成唯一 ID 追踪任务
-                "file_path": saved_uri,
-                "origin_source": source_path,
-                "metadata": {
-                    "parser_used": parser.__class__.__name__,
-                    "file_type": source_path.split('.')[-1]
-                }
-            }
-            self.publisher.produce(message_payload)            
+            file_root, file_ext = os.path.splitext(storage_path)
+            for idx, payload in enumerate(cleaned_content):
+                # 构造不同的保存路径，例如 test_part0.json, test_part1.json
+                fragment_path = f"{file_root}_part{idx}{file_ext}"
+                
+                # 保存 (ContentSaver 只管存 dict)
+                saved_uri = ContentSaver.save_content(payload, fragment_path)
+                
+                # 每一部分都发送一条独立的消息到 MQ
+                # # 下游 Worker 会并行处理这些分片，效率极高
+                self.publisher.produce({
+                    "uri": saved_uri,
+                    "part": idx,
+                    "total": len(cleaned_content)
+                })
+               
             self.logger.info(f"文档处理成功: {source_path} -> {saved_uri}")
-
         except Exception as e:
             self.logger.error(f"处理文档 {source_path} 时发生异常: {str(e)}", exc_info=True)
             raise
