@@ -3,6 +3,7 @@ import logging
 from typing import Dict, Type
 from .interfaces import BaseParser
 from .JsonFileParser import JsonParser
+from .ExcelParser import ExcelParser
 
 class ParserFactory:
     """
@@ -13,7 +14,7 @@ class ParserFactory:
     # 将类作为值存储，在需要时才实例化
     _REGISTERED_PARSERS: Dict[str, Type[BaseParser]] = {
         ".json": JsonParser,
-        # ".pdf": PDFParser,
+        ".xlsx": ExcelParser,
         # ".docx": DocxParser,
         # ".doc": DocxParser,
         # ".txt": None, # 待实现
