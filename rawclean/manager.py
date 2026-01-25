@@ -1,11 +1,14 @@
 from contextlib import closing
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, List
 import uuid
+from constants import ChunkMethod
 from database.interfaces import MessageQueueInterface
+from database.message import TaskMessage
 from files.ContentSaverFactory import ContentSaver
 from files.ContentLoaderFactory import ContentLoader
+from files.DocumentFormat import ContentBody, Node, PipelineInstructions, RAGTaskPayload
 from files.interfaces import BaseParser
 from files.ParserFactory import ParserFactory
 from .CleanerFactory import CleanerFactory
@@ -66,22 +69,50 @@ class CleanManager:
 
             # --- Stream 此时已关闭，释放内存/句柄 ---
             file_root, file_ext = os.path.splitext(storage_path)
-            for idx, payload in enumerate(cleaned_content):
+            for idx, nodes_data in enumerate(cleaned_content):
                 # 构造不同的保存路径，例如 test_part0.json, test_part1.json
                 fragment_path = f"{file_root}_part{idx}{file_ext}"
+
+                new_nodes: List[Node] = []
+                for c in nodes_data:
+                    # 构造新 Node，继承并合并元数据
+                    new_nodes.append(Node(
+                        page_content=c["page_content"],
+                        metadata={**c.get("metadata", {})}
+                    ))
+                    
+                payload = RAGTaskPayload(
+                    content=ContentBody(
+                        pipeline_instructions=PipelineInstructions(
+                        chunk_method=ChunkMethod.NONE # 第一阶段默认不分块
+                        ),
+                        nodes=new_nodes
+                    ),
+                    metadata={
+                        "fragment_index": idx,
+                        "source": source_path
+                        }
+                )
                 
                 # 保存 (ContentSaver 只管存 dict)
-                saved_uri = ContentSaver.save_content(payload, fragment_path)
+                #saved_uri = ContentSaver.save_content(payload, fragment_path)
+                ContentSaver.save_content(
+                    content=payload.model_dump_json(ensure_ascii=False),
+                    path=fragment_path,
+                    metadata=payload.metadata # 传入可选的 metadata
+                )
                 
                 # 每一部分都发送一条独立的消息到 MQ
                 # # 下游 Worker 会并行处理这些分片，效率极高
-                self.publisher.produce({
-                    "uri": saved_uri,
-                    "part": idx,
-                    "total": len(cleaned_content)
-                })
+                output_message = TaskMessage(
+                    file_path=fragment_path,
+                    stage="clean_complete",
+                    trace_id=str(uuid.uuid4())
+                )
+
+                self.publisher.produce(output_message.to_json())
                
-            self.logger.info(f"文档处理成功: {source_path} -> {saved_uri}")
+            self.logger.info(f"文档处理成功: {source_path} -> {fragment_path}")
         except Exception as e:
             self.logger.error(f"处理文档 {source_path} 时发生异常: {str(e)}", exc_info=True)
             raise

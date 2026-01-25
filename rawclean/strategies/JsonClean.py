@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List
-from rawclean.interface import BaseCleaner
+from ..interface import BaseCleaner
 
 class JsonCleaner(BaseCleaner):
     def __init__(self, nodes_per_file: int = 10):

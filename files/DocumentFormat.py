@@ -34,4 +34,4 @@ class ContentBody(BaseModel):
 
 class RAGTaskPayload(BaseModel):
     content: ContentBody
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
