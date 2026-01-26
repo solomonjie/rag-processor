@@ -93,4 +93,4 @@ if __name__ == "__main__":
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
         handler.addFilter(TraceIdFilter())
-    run_chunk_pipeline(sys.argv[1])
+    run_clean_pipeline(sys.argv[1])
