@@ -1,6 +1,7 @@
 import os
 from typing import Any, Dict, List
 from ..interface import BaseCleaner
+from newspaper import Article
 
 class ExcelCleaner(BaseCleaner):
     """
@@ -19,6 +20,8 @@ class ExcelCleaner(BaseCleaner):
         total_rows = len(raw_rows)
         total_chunks = (total_rows + self.rows_per_file - 1) // self.rows_per_file
         all_fragments = []
+        content_cols = ["title","summary","content"]
+        meta_cols =["author","keyWord","tag","contentMentionRegionList","insertDate"]
 
         for i in range(total_chunks):
             start_idx = i * self.rows_per_file
@@ -28,10 +31,14 @@ class ExcelCleaner(BaseCleaner):
             # 仅构造原始 Node 字典，使用约定的 page_content 键名
             nodes_data = []
             for j, row in enumerate(chunk_rows):
+                raw_content = " | ".join([f"{k}: {v}" for k, v in row.items() if k in content_cols])
+                article = Article(url='', language='zh')
+                article.set_html(raw_content)
+                article.parse()
                 nodes_data.append({
-                    "page_content": " | ".join([f"{k}: {v}" for k, v in row.items()]),
+                    "page_content": article.text,
                     "metadata": {
-                        **row, 
+                        **{k: row[k] for k in meta_cols if k in row},
                         "internal_id": f"part{i}_{j}"
                     }
                 })

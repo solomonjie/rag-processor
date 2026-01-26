@@ -11,3 +11,6 @@ pip install llama-index-vector-stores-chroma
 pip install llama-index chromadb
 pip install llama-index-embeddings-text-embeddings-inference
 pip install llama-index-readers-json
+
+pip install lxml_html_clean 
+pip install newspaper3k
