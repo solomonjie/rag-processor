@@ -1,12 +1,12 @@
 import pandas as pd
 from io import BytesIO
-from typing import List, Dict, Any
+from typing import Iterable, Dict, Any
 
 class ExcelParser:
     """
     Excel 解析器：将每一行视为一个独立的语义单元
     """
-    def parse(self, stream: BytesIO) -> List[Dict[str, Any]]:
+    def parse(self, stream: BytesIO) -> Iterable[Dict[str, Any]]:
         # 1. 读取 Excel
         # 注意：如果 Excel 很大，可以使用 usecols 参数只读取需要的列
         df = pd.read_excel(stream)
@@ -23,6 +23,5 @@ class ExcelParser:
         
         # 4. 将 DataFrame 转换为原生 Python 列表字典
         # orient="records" 生成 List[Dict]
-        rows = df.to_dict(orient="records")
-        
-        return rows
+        for row in df.to_dict(orient="records"):
+            yield row # 逐行产出数据

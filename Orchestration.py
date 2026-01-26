@@ -52,7 +52,7 @@ def run_clean_pipeline(file_path:str):
         mq_config=mq_config
     )
     save_path = "data/step2.json"
-    manager.process_document('data/test.xlsx', save_path)
+    manager.process_document('data/公交集团近一周舆情数据.xlsx', save_path)
     print("Clean Done")
 
 def run_chunk_pipeline(file_path:str):
