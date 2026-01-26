@@ -1,4 +1,4 @@
-from interfaces import ChunkerInterface
+from ..interfaces import ChunkerInterface
 from typing import List, Dict, Any
 
 class SemanticChunker(ChunkerInterface):

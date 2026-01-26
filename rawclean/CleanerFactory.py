@@ -1,7 +1,7 @@
 from typing import Any, Dict, Type
 
-from .ExcelClean import ExcelCleaner
-from .JsonClean import JsonCleaner
+from .strategies.ExcelClean import ExcelCleaner
+from .strategies.JsonClean import JsonCleaner
 from .interface import BaseCleaner
 
 class CleanerFactory:

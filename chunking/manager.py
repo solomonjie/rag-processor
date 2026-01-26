@@ -1,25 +1,36 @@
+from contextlib import closing
 import json
 import logging
+import os
 import time
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 # 导入工具类
+from constants import ChunkMethod, EnrichmentMethod
+from database.message import TaskMessage
 from files.ContentLoaderFactory import ContentLoader
 from files.ContentSaverFactory import ContentSaver
 from database.interfaces import MessageQueueInterface
-from chunker_factory import ChunkerFactory
+from .chunker_factory import ChunkerFactory
+from files.DocumentFormat import Node, RAGTaskPayload
 
 class ChunkingManager:
-    def __init__(self, mq: MessageQueueInterface, poll_interval: float = 1.0):
-        """
-        Args:
-            mq: 消息队列实例
-            poll_interval: 无消息时的轮询间隔时间（秒）
-        """
+    def __init__(
+        self, 
+        consumer: MessageQueueInterface,  # 监听队列：接收来自 Clean 的消息
+        publisher: MessageQueueInterface, # 发送队列：发送给 Enrich 的消息
+        consumer_config: Dict[str, Any],         # 包含连接信息
+        publisher_config: Dict[str, Any],         # 包含连接信息
+        poll_interval: float = 1.0
+    ):
         self.logger = logging.getLogger(__name__)
-        self.mq = mq
+        self.consumer = consumer
+        self.publisher = publisher
         self.poll_interval = poll_interval
-        self.running = False
+        
+        # 初始化连接
+        self.consumer.connect(consumer_config)
+        self.publisher.connect(publisher_config)
 
     def start(self):
         """启动持续监听循环"""
@@ -51,47 +62,72 @@ class ChunkingManager:
         返回 True 表示处理了消息，False 表示队列为空
         """
         # 1. 从 MQ 获取消息
-        message = self.mq.consume()
+        message = self.consumer.consume()
         if not message:
             return False
 
-        input_path = message.get("file_path")
-        self.logger.info(f"监听到新消息，处理路径: {input_path}")
+        task = TaskMessage.from_json(message)
+        self.logger.info(f"监听到新消息，处理路径: {task.file_path}")
 
         try:
-            # 2. 加载内容
-            raw_bytes = ContentLoader.load_content(input_path)
-            full_data = json.loads(raw_bytes.getvalue().decode("utf-8"))
+            # 1. 加载内容
+            raw_stream = ContentLoader.load_content(task.file_path)
+
+            # 2. 核心：使用 closing 确保 stream 无论成功失败都会被关闭
+            with closing(raw_stream) as stream:
+                payload = RAGTaskPayload.model_validate_json(raw_stream.getvalue())
 
             # 3. 解析与分块 (基于 step2_part0.json 结构)
-            content_body = full_data.get("content", {})
-            # 注意：此处 raw_text 需确保在第一阶段已存入 content 
-            text_to_chunk = content_body.get("raw_text", "") 
-            instructions = content_body.get("pipeline_instructions", {})
+            instr = payload.content.pipeline_instructions
             
             # 使用工厂获取策略
-            chunker = ChunkerFactory.get_chunker(instructions)
-            nodes = chunker.split(text_to_chunk, instructions)
+            chunker = ChunkerFactory.get_chunker(instr.chunk_method)
+            new_nodes: List[Node] = []
 
             # 4. 更新数据模型
-            content_body["nodes"] = nodes
+            for original_node in payload.content.nodes:
+                # 对单个 Node 的内容进行切分
+                # split 应当返回 List[Dict]，包含 chunk_content 和该块特有的 metadata
+                chunks = chunker.split(original_node.page_content, instr.model_dump())
+                
+                for c in chunks:
+                    # 构造新 Node，继承并合并元数据
+                    new_nodes.append(Node(
+                        page_content=c["chunk_content"],
+                        metadata={**original_node.metadata, **c.get("metadata", {})}
+                    ))
+
+            # 5. 更新 Payload 数据结构
+            payload.content.nodes = new_nodes
+
+            # 6. 状态转换：关闭分块，开启增强（如果需要）
+            payload.content.pipeline_instructions.chunk_method = ChunkMethod.NONE
+            # # 这里可以根据业务逻辑决定下一步要做的 Enrichment
+            # if payload.content.pipeline_instructions.enrichment_methods == [EnrichmentMethod.NONE]:
+            #     # 示例：默认分块后进行摘要和关键词提取
+            #     payload.content.pipeline_instructions.enrichment_methods = [
+            #         EnrichmentMethod.SUMMARY, 
+            #         EnrichmentMethod.KEYWORDS
+            #     ]
             
-            # 5. 保存结果
-            output_path = input_path.replace("step2_part0", "step2_chunked")
+            # 7. 持久化并发送下一阶段消息
+            base_path, ext = os.path.splitext(task.file_path)
+            output_path = f"{base_path}_chunked{ext}"
             ContentSaver.save_content(
-                content=json.dumps(content_body, ensure_ascii=False),
+                content=payload.model_dump_json(ensure_ascii=False), # 序列化整个对象
                 path=output_path,
-                metadata=full_data.get("metadata")
+                metadata=payload.metadata
             )
 
-            # 6. 下游通知
-            self.mq.produce({
-                "file_path": output_path,
-                "stage": "chunking_complete"
-            })
+            # 发送下一阶段的消息
+            next_msg = TaskMessage(
+                file_path=output_path,
+                stage="chunking_complete",
+                trace_id=task.trace_id
+            )
+            self.publisher.produce(next_msg.to_json())
             
             return True
-
         except Exception as e:
-            self.logger.error(f"处理任务 {input_path} 失败: {e}")
-            return True # 返回 True 表示已经尝试处理过该消息
+            self.logger.error(f"处理失败: {task.file_path if 'task' in locals() else 'unknown'}, 错误: {e}")
+            return True # 坏消息不再重试
