@@ -81,6 +81,7 @@ def run_chunk_pipeline(file_path:str):
 
     manager.start()
 
+#1,000,000 cost
 def run_enrich_pipeline(file_path:str):
     consume = MemoryMessageQueue()
     consume_config = {"topic": "clean_flow"}
@@ -99,7 +100,7 @@ def run_enrich_pipeline(file_path:str):
     )
 
     output_message = TaskMessage(
-        file_path="data/step2_part100.json",
+        file_path="data/step2_part238.json",
         stage="chunk_complete",
         trace_id=str(uuid.uuid4())  # 记得加括号生成实例
     )

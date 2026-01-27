@@ -21,6 +21,7 @@ class EnrichmentMaster:
             EnrichmentMethod.QUESTIONS:QuestionStrategy()
         }
         self.batch_size = batch_size
+        self.semaphore = asyncio.Semaphore(5)
 
     async def process_payload(self, payload: RAGTaskPayload):
         """
@@ -43,7 +44,7 @@ class EnrichmentMaster:
 
         # 3. 关键：统一等待所有批次执行完成
         if batch_tasks:
-            self.logger.info(f"开始并发处理 {len(batch_tasks)} 个批次...")
+            self.logger.info(f"总共{len(nodes)}个Node，开始并发处理 {len(batch_tasks)} 个批次...")
             await asyncio.gather(*batch_tasks)
             self.logger.info("所有批次丰富化处理完成。")
 
@@ -51,35 +52,42 @@ class EnrichmentMaster:
         """
         异步批次处理器：发送请求并回填结果
         """
-        prompt = self._build_batch_prompt(batch_nodes, strategies)
-        
-        try:
-            # 调用 LlamaIndex 的异步接口 (acomplete)
-            response = await self.llm_client.get_llm().acomplete(prompt)
-            response_text = str(response.text) if hasattr(response, 'text') else str(response)
-
-            # 解析返回的 JSON 列表
-            results = self._parse_batch_response(response_text)
+        async with self.semaphore:
+            prompt = self._build_batch_prompt(batch_nodes, strategies)
             
-            # 建立 ID 映射表，防止顺序错乱
-            result_map = {
-                item.get('block_id'): item 
-                for item in results 
-                if isinstance(item, dict) and 'block_id' in item
-            }
-
-            # 遍历当前批次的节点进行回填
-            for idx, node in enumerate(batch_nodes):
-                # 尝试从映射表中根据 ID 获取结果，如果 ID 不匹配则降级使用索引
-                data = result_map.get(idx) or (results[idx] if idx < len(results) else None)
+            try:
+                # 调用 LlamaIndex 的异步接口 (acomplete)
+                response = await self.llm_client.get_llm().acomplete(prompt)
+                response_text = str(response.text) if hasattr(response, 'text') else str(response)
+    
+                # 解析返回的 JSON 列表
+                results = self._parse_batch_response(response_text)
                 
-                if data and isinstance(data, dict):
-                    # 移除辅助用的 block_id，只保留有价值的 metadata
-                    data.pop('block_id', None)
-                    node.metadata.update(data)
+                # 建立 ID 映射表，防止顺序错乱
+                result_map = {
+                    item.get('block_id'): item 
+                    for item in results 
+                    if isinstance(item, dict) and 'block_id' in item
+                }
+    
+                # 遍历当前批次的节点进行回填
+                successCount = 0
+                failedCount =0
+                for idx, node in enumerate(batch_nodes):
+                    # 尝试从映射表中根据 ID 获取结果，如果 ID 不匹配则降级使用索引
+                    data = result_map.get(idx) or (results[idx] if idx < len(results) else None)
                     
-        except Exception as e:
-            self.logger.error(f"批次处理失败: {e}", exc_info=True)
+                    if data and isinstance(data, dict):
+                        # 移除辅助用的 block_id，只保留有价值的 metadata
+                        data.pop('block_id', None)
+                        node.metadata.update(data)
+                        successCount = successCount + 1
+                    else:
+                        failedCount = failedCount + 1
+                
+                self.logger.info(f"批次处理完成，成功: {successCount}， 失败 {failedCount}")        
+            except Exception as e:
+                self.logger.error(f"批次处理失败: {e}", exc_info=True)
 
     def _parse_batch_response(self, response_text: str) -> List[Dict[str, Any]]:
         """
@@ -101,7 +109,7 @@ class EnrichmentMaster:
                 potential_json_objects = re.findall(r'\{.*?\}', response_text, re.DOTALL)
                 return [json.loads(obj) for obj in potential_json_objects]
             except Exception as e:
-                self.logger.warning(f"JSON 解析二次尝试失败: {e}")
+                self.logger.warning(f"JSON 解析二次尝试失败: {e}, response 信息 {response_text}")
                 return []
 
     def _build_batch_prompt(self, nodes: List[Node], strategies: List[BaseEnrichmentStrategy]) -> str:
