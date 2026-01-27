@@ -1,5 +1,6 @@
 import logging
 import uuid
+from llm.llm_client import LLMClient
 from chunking.manager import ChunkingManager
 from database.MemoryMessageQueue import MemoryMessageQueue
 from database.ChromadbVectorStorage import ChromadbServices
@@ -88,15 +89,17 @@ def run_enrich_pipeline(file_path:str):
     publish = MemoryMessageQueue()
     publish_config = {"topic": "chunk_flow"}
     publish.connect(publish_config)
+    
+    master = EnrichmentMaster(LLMClient())
 
     manager = EnrichmentManager(
         consumer=consume,
         publisher=publish,
-        enrich_master=EnrichmentMaster("llmclient")
+        enrich_master=master
     )
 
     output_message = TaskMessage(
-        file_path="data/step2_part2.json",
+        file_path="data/step2_part100.json",
         stage="chunk_complete",
         trace_id=str(uuid.uuid4())  # 记得加括号生成实例
     )

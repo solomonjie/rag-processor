@@ -2,18 +2,22 @@ import asyncio
 import json
 import logging
 from typing import List, Dict, Any
+from llm.llm_client import LLMClient
 from constants import EnrichmentMethod
 from files.DocumentFormat import RAGTaskPayload, Node
-from .strategies import SummaryStrategy, KeywordStrategy
+from .strategies.SummaryStrategy import SummaryStrategy
+from .strategies.KeywordStrategy import KeywordStrategy
+from .strategies.QuestionStrategy import QuestionStrategy
 from .interfaces import BaseEnrichmentStrategy
 
 class EnrichmentMaster:
-    def __init__(self, llm_client):
+    def __init__(self, llm_client: LLMClient):
         self.llm_client = llm_client
         self.logger = logging.getLogger(__name__)
         self._strategy_map = {
-            EnrichmentMethod.SUMMARY: SummaryStrategy,
-            EnrichmentMethod.KEYWORDS: KeywordStrategy
+            EnrichmentMethod.SUMMARY: SummaryStrategy(),
+            EnrichmentMethod.KEYWORDS: KeywordStrategy(),
+            EnrichmentMethod.QUESTIONS:QuestionStrategy()
         }
 
     async def process_payload(self, payload: RAGTaskPayload):
@@ -35,6 +39,8 @@ class EnrichmentMaster:
         
         if tasks:
             await asyncio.gather(*tasks)
+        
+        self.logger.info("Process All document complete.")
 
     async def _enrich_single_node(self, node: Node, strategies: List[BaseEnrichmentStrategy]):
         """
@@ -42,9 +48,8 @@ class EnrichmentMaster:
         """
         prompt = self._build_prompt(node.page_content, strategies)
         try:
-            # 假设 llm_client.ask 是异步的
-            raw_response = await self.llm_client.ask(prompt)
-            enriched_json = self._parse_response(raw_response)
+            raw_response = await self.llm_client.get_llm().acomplete(prompt)
+            enriched_json = self._parse_response(raw_response.text)
             
             # 将结果合并到节点的元数据中
             if enriched_json:
