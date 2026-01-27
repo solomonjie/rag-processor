@@ -14,3 +14,8 @@ class EnrichmentMethod(str, Enum):
     QUESTIONS = "questions"      # 生成相关问题
     ENTITIES = "entities"        # 命名实体识别
     KEYWORDS = "keywords"        # 提取关键词
+
+class LLMClientKey(str, Enum):
+    DeepSeek = "deepseek"
+    DeepSeekModel = "DeepSeek_Model_Name"
+    DeepSeekAPIKey = "DeepSeek_API_Key"

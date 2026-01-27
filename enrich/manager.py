@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import closing
 import json
 import logging
@@ -29,22 +30,31 @@ class EnrichmentManager:
         self.running = False
 
     def start(self):
+        """同步入口：负责启动异步大循环"""
         self.running = True
         self.logger.info("EnrichmentManager 已启动...")
+        
+        # 核心点 1: 在同步方法中启动 asyncio 事件循环
         try:
-            while self.running:
-                raw_msg = self.consumer.consume()
-                if not raw_msg:
-                    time.sleep(self.poll_interval)
-                    continue
-                try:
-                    self._process_task(raw_msg)
-                except Exception as e:
-                    self.logger.error(f"处理丰富化任务失败: {e}", exc_info=True)
+            asyncio.run(self._main_loop())
         except KeyboardInterrupt:
             self.stop()
 
-    def _process_task(self, raw_msg: Any):
+    async def _main_loop(self):
+        """异步主循环：负责监听 MQ"""
+        while self.running:
+            raw_msg = self.consumer.consume()
+            if not raw_msg:
+                # 核心点 2: 异步循环内必须用 asyncio.sleep，否则会阻塞整个线程
+                await asyncio.sleep(self.poll_interval)
+                continue
+            
+            try:
+                await self._process_task(raw_msg)
+            except Exception as e:
+                self.logger.error(f"处理任务过程中发生异常: {e}", exc_info=True)
+
+    async def _process_task(self, raw_msg: Any):
         # 1. 消息解码 (TaskMessage 模式)
         task = TaskMessage.from_json(raw_msg)
         self.logger.info(f"开始丰富化处理: {task.file_path} (TraceID: {task.trace_id})")
@@ -63,7 +73,7 @@ class EnrichmentManager:
 
         # 4. 调用 Master 进行批量/并发丰富化 (此处逻辑在 Master 中实现)
         # 注意：这里会修改 payload.content.nodes
-        self.master.process_payload(payload)
+        await self.master.process_payload(payload)
 
         # 5. 状态转换：清空方法列表防止重复执行
         payload.content.pipeline_instructions.enrichment_methods = [EnrichmentMethod.NONE]
