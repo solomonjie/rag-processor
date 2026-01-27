@@ -5,6 +5,8 @@ from database.MemoryMessageQueue import MemoryMessageQueue
 from database.ChromadbVectorStorage import ChromadbServices
 from database.ElasticKeywordStorage import ElasticServices
 from database.message import IngestionTaskSchema, TaskMessage
+from enrich.EnrichmentMaster import EnrichmentMaster
+from enrich.manager import EnrichmentManager
 from index.manager import IngestionManager
 from embedding.TextEmbeddingsInference import TextEmbeddingService
 from database.memoryRegistry_impl import MemoryStatusRegistry
@@ -78,6 +80,29 @@ def run_chunk_pipeline(file_path:str):
 
     manager.start()
 
+def run_enrich_pipeline(file_path:str):
+    consume = MemoryMessageQueue()
+    consume_config = {"topic": "clean_flow"}
+    consume.connect(consume_config)
+
+    publish = MemoryMessageQueue()
+    publish_config = {"topic": "chunk_flow"}
+    publish.connect(publish_config)
+
+    manager = EnrichmentManager(
+        consumer=consume,
+        publisher=publish,
+        enrich_master=EnrichmentMaster("llmclient")
+    )
+
+    output_message = TaskMessage(
+        file_path="data/step2_part2.json",
+        stage="chunk_complete",
+        trace_id=str(uuid.uuid4())  # 记得加括号生成实例
+    )
+    consume.produce(output_message.to_json())
+
+    manager.start()
 
 if __name__ == "__main__":
     # 检查是否传入了文件路径
@@ -93,4 +118,4 @@ if __name__ == "__main__":
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
         handler.addFilter(TraceIdFilter())
-    run_clean_pipeline(sys.argv[1])
+    run_enrich_pipeline(sys.argv[1])
