@@ -117,35 +117,59 @@ class EnrichmentMaster:
         构造批量处理的 Prompt，通过 BLOCK_ID 区分不同节点
         """
         # 1. 组装所有策略的指令
-        instructions = "\n".join([f"- {s.instruction}" for s in strategies])
-        
-        # 2. 构造输出格式示例
-        format_example = {s.output_field: "..." for s in strategies}
-        # 显式要求包含 block_id 以便回填
-        format_example["block_id"] = "必须与输入的 ID 一致"
+        task_definitions = []
+        for s in strategies:
+            schema = s.output_schema()
+            rules = "\n".join([f"- {r}" for r in s.quality_rules()])
+    
+            task_definitions.append(f"""
+任务：{s.task_name()}
+含义：{s.task_description()}
+输出字段："{s.output_field()}"
+结构约束：{json.dumps(schema, ensure_ascii=False)}
+质量要求：
+{rules if rules else "- 无"}
+""")
 
-        # 3. 组装待处理文本块
-        content_sections = ""
+        # 2. 输出字段 contract
+        output_fields = {
+            s.output_field(): s.failure_fallback()
+            for s in strategies
+        }
+        output_fields["block_id"] = "number"
+    
+        # 3. 输入内容
+        content_blocks = []
         for idx, node in enumerate(nodes):
-            # 使用清晰的边界符
-            content_sections += f"=== BLOCK_ID: {idx} ===\n{node.page_content}\n\n"
+            content_blocks.append(
+                f"=== BLOCK_ID: {idx} ===\n{node.page_content}"
+            )
+    
+        return f"""
+你是一个结构化信息抽取系统，而不是聊天助手。
+你的任务是：为每个文本块生成可用于 RAG 检索与排序的元数据。
 
-        return f"""你是一个专业的文档分析专家。请对以下 {len(nodes)} 组文本块分别执行任务。
+{chr(10).join(task_definitions)}
 
-**任务列表：**
-{instructions}
+【失败兜底规则】
+- 若文本信息不足，返回该字段的空值（不要编造）
+- 必须仍然返回该 block_id 对应的对象
 
-**约束要求：**
-1. 必须严格返回一个 JSON 数组。
-2. 数组中的每个对象必须包含 "block_id" 字段。
-3. 数组长度必须等于 {len(nodes)}，且顺序与输入一致。
+【输出规则（必须严格遵守）】
+- 只返回 JSON
+- 最外层必须是数组
+- 数组长度必须等于 {len(nodes)}
+- 每个对象必须包含以下字段：
+{json.dumps(output_fields, ensure_ascii=False, indent=2)}
+- 不要额外字段
+- 不要 Markdown
+- 不要解释文字
 
-**输出格式示例：**
-[
-  {json.dumps(format_example, ensure_ascii=False)},
-  ...
-]
+在输出前，请自检：
+- JSON 是否可被直接解析
+- block_id 是否完整且连续
+- 数组长度是否正确
 
-**待处理文本内容：**
-{content_sections}
+【待处理文本】
+{chr(10).join(content_blocks)}
 """
