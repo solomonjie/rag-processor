@@ -11,10 +11,12 @@ pip install llama-index-vector-stores-chroma
 pip install llama-index chromadb
 pip install llama-index-embeddings-text-embeddings-inference
 pip install llama-index-readers-json
+pip install llama-index-vector-stores-milvus
 
 pip install lxml_html_clean 
 pip install newspaper3k
 
+Run Modl Local:
 docker run -d --gpus all --shm-size 4g -p 6000:8000 -v /c/Work/Model/Qwen3-0.6B:/app/model vllm/vllm-openai:latest --model /app/model --served-model-name Qwen3-0.6B --gpu-memory-utilization 0.8 --max-model-len 1024
 
 
