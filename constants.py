@@ -19,3 +19,10 @@ class LLMClientKey(str, Enum):
     DeepSeek = "deepseek"
     DeepSeekModel = "DeepSeek_Model_Name"
     DeepSeekAPIKey = "DeepSeek_API_Key"
+
+class VectorDatabaseConst(str, Enum):
+    MilvusQueryModeSparse = "sparse"
+    MilvusQueryModeDense = "dense"
+    MilvusQueryModeHybrid = "hybrid"
+    MilvusDefaultServer = "http://localhost:19530"
+    MilvusDefaultCollectionName = "default_hybrid_collection"

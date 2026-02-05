@@ -3,7 +3,7 @@ import logging
 import time
 from typing import List, Dict, Any, Optional
 from files.ContentLoaderFactory import ContentLoader
-from database.interfaces import MessageQueueInterface, VectorStoreInterface, KeywordStoreInterface, BaseStatusRegistry
+from database.interfaces import MessageQueueInterface, BaseStore, BaseStatusRegistry
 from database.message import IngestionTaskSchema
 from files.ParserFactory import ParserFactory
 from logfilter.logging_context import trace_id_var
@@ -13,14 +13,12 @@ class IngestionManager:
     def __init__(
         self, 
         mq: MessageQueueInterface,
-        vector_store: Optional[VectorStoreInterface] = None, 
-        keyword_store: Optional[KeywordStoreInterface] = None,
+        vector_store: Optional[BaseStore] = None, 
         registry: Optional[BaseStatusRegistry] = None,
         strict_consistency: bool = True
     ):
         self.logger = logging.getLogger(__name__)
         self.v_store = vector_store
-        self.k_store = keyword_store
         self.registry = registry
         self.strict_consistency = strict_consistency
         self.mq = mq
@@ -62,7 +60,6 @@ class IngestionManager:
 
             # 3. 将数据插入数据库中
             success = self._process_file_batches(
-                index_name=task.index_name,
                 file_name=task.file_name,
                 file_hash=task.file_hash,
                 chunks=nodes
@@ -101,15 +98,12 @@ class IngestionManager:
             nodes.append(node)
         return nodes   
 
-    def _process_file_batches(self, index_name: str, file_name: str, file_hash: str, chunks: List[TextNode], batch_size: int = 50) -> bool:
+    def _process_file_batches(self, file_name: str, file_hash: str, chunks: List[TextNode], batch_size: int = 50) -> bool:
         """处理文件级别的批量入库逻辑"""
         # 1. 检查文件是否整体已完成
         if self.registry and self.registry.is_file_processed(file_name):
             self.logger.info(f"File {file_name} already fully processed.")
             return
-        
-        config = {"index_name": index_name}
-        self.v_store.connect(config)
 
         # 获取当前文件已处理的 chunk 集合以实现续传
         processed_chunk_ids = self.registry.get_processed_chunks(file_name) if self.registry else set()
@@ -126,9 +120,6 @@ class IngestionManager:
                 if self.v_store:
                     if self.v_store.insert(to_process):
                         v_success_ids = [c.id_ for c in to_process]
-                
-                if self.k_store and not self.k_store.insert(to_process) and self.strict_consistency:
-                    raise RuntimeError("Keyword store insert failed")
 
                 # 4. 记录当前 batch 的 chunk 进度
                 if self.registry:
