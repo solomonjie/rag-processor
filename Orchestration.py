@@ -1,10 +1,10 @@
 import logging
 import uuid
+from constants import VectorDatabaseConst
 from llm.llm_client import LLMClient
 from chunking.manager import ChunkingManager
 from database.MemoryMessageQueue import MemoryMessageQueue
-from database.ChromadbVectorStorage import ChromadbServices
-from database.ElasticKeywordStorage import ElasticServices
+from database.MilvusHybridStore import MilvusHybridStore
 from database.message import IngestionTaskSchema, TaskMessage
 from enrich.EnrichmentMaster import EnrichmentMaster
 from enrich.manager import EnrichmentManager
@@ -13,19 +13,27 @@ from embedding.TextEmbeddingsInference import TextEmbeddingService
 from database.memoryRegistry_impl import MemoryStatusRegistry
 from logfilter.logging_context import TraceIdFilter
 import sys
+import asyncio
+import nest_asyncio
 
 from rawclean.manager import CleanManager
 
-def run_ingestion_pipeline(file_path: str):
+async def run_ingestion_pipeline(file_path: str):
     # 1. 组装依赖 (DI)
     registry = MemoryStatusRegistry()
     emb_model = TextEmbeddingService()
     mq = MemoryMessageQueue()
-    v_storage = ChromadbServices(emb_model.embed_model)
+    storage_config = {
+        "uri":VectorDatabaseConst.MilvusDefaultServer.value,
+        "enable_sparse":True,
+        "enable_dense":True,
+        "dim":512,
+        "collection_name":"product_knowledge_base"
+    }
+    v_storage = MilvusHybridStore(storage_config, emb_model.embed_model)
     manager = IngestionManager(
         mq=mq,
         vector_store=v_storage, 
-        keyword_store=ElasticServices(),
         registry=registry
     )
     
@@ -34,9 +42,9 @@ def run_ingestion_pipeline(file_path: str):
     # 2. 发送消息
     task_data = {
         "file_name": "data_sample.json",
-        "file_path": f"C:\enlist\\rag-processor\data\data_sample.json",
+        "file_path": f"data/data_sample.json",
         "file_hash": "hash_8899_xyz",
-        "index_name": "product_knowledge_base",
+        "index_name":"product_knowledge_base",
         "metadata": {"department": "AI_Research", "priority": "high"}
     }
 
@@ -122,4 +130,5 @@ if __name__ == "__main__":
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
         handler.addFilter(TraceIdFilter())
-    run_enrich_pipeline(sys.argv[1])
+    #run_ingestion_pipeline(sys.argv[1])
+    asyncio.run(run_ingestion_pipeline(sys.argv[1]))

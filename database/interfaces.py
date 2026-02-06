@@ -29,12 +29,18 @@ class VectorStoreInterface(BaseStore):
         """语义搜索"""
         pass
 
-class KeywordStoreInterface(BaseStore):
-    """关键词数据库专用的精确匹配接口"""
-    
+class HybridStoreInterface(BaseStore):
     @abstractmethod
-    def search_by_keyword(self, query_text: str, top_k: int = 5):
-        """全文检索"""
+    def search(self, query_text: str, mode: str = "hybrid", top_k: int = 5, **kwargs):
+        """
+        统一检索接口
+        :param mode: 检索模式，支持 "dense" (语义), "sparse" (关键词/全文), "hybrid" (混合)
+        """
+        pass
+
+    @abstractmethod
+    def delete_batch(self, ids: List[str]):
+        """支持补偿回滚逻辑"""
         pass
 
 class BaseStatusRegistry(ABC):
