@@ -131,4 +131,4 @@ if __name__ == "__main__":
     for handler in root_logger.handlers:
         handler.addFilter(TraceIdFilter())
     #run_ingestion_pipeline(sys.argv[1])
-    asyncio.run(run_enrich_pipeline(sys.argv[1]))
+    asyncio.run(run_ingestion_pipeline(sys.argv[1]))
