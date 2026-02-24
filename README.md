@@ -21,3 +21,6 @@ docker run -d --gpus all --shm-size 4g -p 6000:8000 -v /c/Work/Model/Qwen3-0.6B:
 
 
 docker run -d --gpus all --shm-size 4g -p 6000:8000 -v /c/Work/Model/Qwen3-0.6B:/app/model vllm/vllm-openai:latest --model /app/model --served-model-name qwen-0.6b --gpu-memory-utilization 0.8 --max-model-len 1024
+
+Build external dev redis mq
+docker run -d --name redis-dev -p 6379:6379 -v C:\enlist\rag-processor\data:/data redis:8.6 redis-server --appendonly yes
