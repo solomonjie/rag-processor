@@ -20,7 +20,7 @@ class EnrichmentManager:
         consumer: MessageQueueInterface,  # 接收来自 Chunk 的消息
         publisher:MessageQueueInterface, # 发送给 Index 的消息
         enrich_master:EnrichmentMaster, # 封装了 LLM 编排逻辑的 Master
-        poll_interval: float = 1.0
+        poll_interval: float = 5.0
     ):
         self.logger = logging.getLogger(__name__)
         self.consumer = consumer
@@ -29,23 +29,22 @@ class EnrichmentManager:
         self.poll_interval = poll_interval
         self.running = False
 
-    def start(self):
+    async def start(self):
         """同步入口：负责启动异步大循环"""
         self.running = True
         self.logger.info("EnrichmentManager 已启动...")
         
-        # 核心点 1: 在同步方法中启动 asyncio 事件循环
         try:
-            asyncio.run(self._main_loop())
+            await self._main_loop()
         except KeyboardInterrupt:
             self.stop()
 
     async def _main_loop(self):
         """异步主循环：负责监听 MQ"""
         while self.running:
-            raw_msg = self.consumer.consume()
+            loop = asyncio.get_running_loop()
+            raw_msg = await loop.run_in_executor(None, self.consumer.consume)
             if not raw_msg:
-                # 核心点 2: 异步循环内必须用 asyncio.sleep，否则会阻塞整个线程
                 await asyncio.sleep(self.poll_interval)
                 continue
             

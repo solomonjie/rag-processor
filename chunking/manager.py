@@ -102,13 +102,13 @@ class ChunkingManager:
 
             # 6. 状态转换：关闭分块，开启增强（如果需要）
             payload.content.pipeline_instructions.chunk_method = ChunkMethod.NONE
-            # # 这里可以根据业务逻辑决定下一步要做的 Enrichment
-            # if payload.content.pipeline_instructions.enrichment_methods == [EnrichmentMethod.NONE]:
-            #     # 示例：默认分块后进行摘要和关键词提取
-            #     payload.content.pipeline_instructions.enrichment_methods = [
-            #         EnrichmentMethod.SUMMARY, 
-            #         EnrichmentMethod.KEYWORDS
-            #     ]
+            # 这里可以根据业务逻辑决定下一步要做的 Enrichment
+            if payload.content.pipeline_instructions.enrichment_methods == [EnrichmentMethod.NONE]:
+                # 示例：默认分块后进行摘要和关键词提取
+                payload.content.pipeline_instructions.enrichment_methods = [
+                    EnrichmentMethod.SUMMARY, 
+                    EnrichmentMethod.KEYWORDS
+                ]
             
             # 7. 持久化并发送下一阶段消息
             base_path, ext = os.path.splitext(task.file_path)
