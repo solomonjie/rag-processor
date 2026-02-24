@@ -55,18 +55,18 @@ async def run_ingestion_pipeline(file_path: str):
     # 3. 调用编排逻辑
     manager.start_listening(mq_config)
 
-def run_clean_pipeline(file_path:str):
+async def run_clean_pipeline(file_path:str):
     mq = MemoryMessageQueue()
     mq_config = {"topic": "clean_flow"}
     manager = CleanManager(
         publisher=mq,
         mq_config=mq_config
     )
-    save_path = "data/step2.json"
-    manager.process_document('data/公交集团近一周舆情数据.xlsx', save_path)
+    save_path = "data/pipeline.json"
+    manager.process_document('data/pipeline.xlsx', save_path)
     print("Clean Done")
 
-def run_chunk_pipeline(file_path:str):
+async def run_chunk_pipeline(file_path:str):
     consume = MemoryMessageQueue()
     consume_config = {"topic": "clean_flow"}
 
@@ -81,7 +81,7 @@ def run_chunk_pipeline(file_path:str):
     )
 
     output_message = TaskMessage(
-        file_path="data/step2_part2.json",
+        file_path="data/pipeline_part1.json",
         stage="clean_complete",
         trace_id=str(uuid.uuid4())  # 记得加括号生成实例
     )
@@ -90,7 +90,7 @@ def run_chunk_pipeline(file_path:str):
     manager.start()
 
 #1,000,000 cost
-def run_enrich_pipeline(file_path:str):
+async def run_enrich_pipeline(file_path:str):
     consume = MemoryMessageQueue()
     consume_config = {"topic": "clean_flow"}
     consume.connect(consume_config)
@@ -108,13 +108,13 @@ def run_enrich_pipeline(file_path:str):
     )
 
     output_message = TaskMessage(
-        file_path="data/step2_part238.json",
+        file_path="data/single.json",
         stage="chunk_complete",
         trace_id=str(uuid.uuid4())  # 记得加括号生成实例
     )
     consume.produce(output_message.to_json())
 
-    manager.start()
+    await manager.start()
 
 if __name__ == "__main__":
     # 检查是否传入了文件路径
@@ -131,4 +131,4 @@ if __name__ == "__main__":
     for handler in root_logger.handlers:
         handler.addFilter(TraceIdFilter())
     #run_ingestion_pipeline(sys.argv[1])
-    asyncio.run(run_ingestion_pipeline(sys.argv[1]))
+    asyncio.run(run_enrich_pipeline(sys.argv[1]))

@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from llm.llm_client import LLMClient
 from constants import EnrichmentMethod
 from files.DocumentFormat import RAGTaskPayload, Node
@@ -12,7 +12,7 @@ from .strategies.QuestionStrategy import QuestionStrategy
 from .interfaces import BaseEnrichmentStrategy
 
 class EnrichmentMaster:
-    def __init__(self, llm_client: LLMClient, batch_size: int = 10):
+    def __init__(self, llm_client: LLMClient, max_concurrency: int = 5):
         self.llm_client = llm_client
         self.logger = logging.getLogger(__name__)
         self._strategy_map = {
@@ -20,12 +20,11 @@ class EnrichmentMaster:
             EnrichmentMethod.KEYWORDS: KeywordStrategy(),
             EnrichmentMethod.QUESTIONS:QuestionStrategy()
         }
-        self.batch_size = batch_size
-        self.semaphore = asyncio.Semaphore(5)
+        self.semaphore = asyncio.Semaphore(max_concurrency)
 
     async def process_payload(self, payload: RAGTaskPayload):
         """
-        供 Manager 调用的核心入口
+        供 Manager 调用的核心入口：将所有 Node 分发为独立的异步任务
         """
         methods = payload.content.pipeline_instructions.enrichment_methods
         active_strategies = [self._strategy_map[m] for m in methods if m in self._strategy_map]
@@ -34,60 +33,91 @@ class EnrichmentMaster:
             return
 
         nodes = [n for n in payload.content.nodes if n.page_content.strip()]
-        # 并发处理所有节点
-        batch_tasks = []
-        for i in range(0, len(nodes), self.batch_size):
-            batch_nodes = nodes[i : i + self.batch_size]
-            # 创建协程对象并放入列表
-            task = self._enrich_batch(batch_nodes, active_strategies)
-            batch_tasks.append(task)
+        
+        if not nodes:
+            return
 
-        # 3. 关键：统一等待所有批次执行完成
-        if batch_tasks:
-            self.logger.info(f"总共{len(nodes)}个Node，开始并发处理 {len(batch_tasks)} 个批次...")
-            await asyncio.gather(*batch_tasks)
-            self.logger.info("所有批次丰富化处理完成。")
+        self.logger.info(f"开始处理 {len(nodes)} 个节点的丰富化任务 (并发限制: {self.semaphore._value})...")
 
-    async def _enrich_batch(self, batch_nodes: List[Node], strategies: List[Any]):
+        # 1. 为每个节点创建独立的协程任务
+        tasks = [self._enrich_single_node(node, active_strategies) for node in nodes]
+
+        # 2. 并发执行并等待全部完成
+        await asyncio.gather(*tasks)
+        self.logger.info("所有节点丰富化处理完成。")
+
+    async def _enrich_single_node(self, node: Node, strategies: List[BaseEnrichmentStrategy]):
         """
-        异步批次处理器：发送请求并回填结果
+        单节点处理器：负责单个 Node 的 Prompt 构建、调用和结果回填
         """
         async with self.semaphore:
-            prompt = self._build_batch_prompt(batch_nodes, strategies)
+            prompt = self._build_single_prompt(node.page_content, strategies)
             
             try:
-                # 调用 LlamaIndex 的异步接口 (acomplete)
+                # 调用 LLM
                 response = await self.llm_client.get_llm().acomplete(prompt)
                 response_text = str(response.text) if hasattr(response, 'text') else str(response)
     
-                # 解析返回的 JSON 列表
-                results = self._parse_batch_response(response_text)
+                # 解析返回的 JSON
+                data = self._parse_json_response(response_text)
                 
-                # 建立 ID 映射表，防止顺序错乱
-                result_map = {
-                    item.get('block_id'): item 
-                    for item in results 
-                    if isinstance(item, dict) and 'block_id' in item
-                }
-    
-                # 遍历当前批次的节点进行回填
-                successCount = 0
-                failedCount =0
-                for idx, node in enumerate(batch_nodes):
-                    # 尝试从映射表中根据 ID 获取结果，如果 ID 不匹配则降级使用索引
-                    data = result_map.get(idx) or (results[idx] if idx < len(results) else None)
+                if data and isinstance(data, dict):
+                    # 直接回填到 Node 的 metadata 中
+                    node.metadata.update(data)
+                    self.logger.debug(f"节点 {node.id if hasattr(node, 'id') else ''} 处理成功")
+                else:
+                    self.logger.warning(f"节点处理返回空数据或格式错误")
                     
-                    if data and isinstance(data, dict):
-                        # 移除辅助用的 block_id，只保留有价值的 metadata
-                        data.pop('block_id', None)
-                        node.metadata.update(data)
-                        successCount = successCount + 1
-                    else:
-                        failedCount = failedCount + 1
-                
-                self.logger.info(f"批次处理完成，成功: {successCount}， 失败 {failedCount}")        
             except Exception as e:
-                self.logger.error(f"批次处理失败: {e}", exc_info=True)
+                self.logger.error(f"单个节点处理失败: {e}", exc_info=False)
+
+    def _parse_json_response(self, response_text: str) -> Optional[Dict[str, Any]]:
+        """
+        解析单条 JSON 响应，增加了对 Markdown 标记的过滤
+        """
+        clean_text = response_text.strip()
+        # 移除 Markdown 代码块包裹
+        if clean_text.startswith("```json"):
+            clean_text = clean_text.split("```json")[1].split("```")[0].strip()
+        elif clean_text.startswith("```"):
+            clean_text = clean_text.split("```")[1].split("```")[0].strip()
+
+        try:
+            return json.loads(clean_text)
+        except json.JSONDecodeError:
+            self.logger.error(f"JSON 解析失败。原始响应: {response_text}")
+            return None
+
+    def _build_single_prompt(self, content: str, strategies: List[BaseEnrichmentStrategy]) -> str:
+        """
+        构造针对单条文本的精简 Prompt
+        """
+        task_definitions = []
+        output_schema = {}
+
+        for s in strategies:
+            # 组装任务定义
+            task_definitions.append(f"- {s.task_name()}: {s.task_description()}")
+            # 组装期望的 JSON 结构
+            output_schema[s.output_field()] = s.output_schema()
+
+        return f"""
+你是一个专业的结构化信息抽取系统。请分析以下文本，并提取元数据。
+
+【任务指令】
+{chr(10).join(task_definitions)}
+
+【输出格式要求】
+1. 必须只返回一个纯 JSON 对象。
+2. JSON 结构必须符合以下 Schema:
+{json.dumps(output_schema, ensure_ascii=False, indent=2)}
+3. 不要输出任何解释性文字或 Markdown 标签。
+
+【待分析文本】
+---
+{content}
+---
+"""
 
     def _parse_batch_response(self, response_text: str) -> List[Dict[str, Any]]:
         """

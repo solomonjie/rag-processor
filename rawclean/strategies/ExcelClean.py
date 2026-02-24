@@ -8,7 +8,7 @@ class ExcelCleaner(BaseCleaner):
     Excel 清洗器：负责将原始行数据按分片大小切割。
     注意：它不再负责构建 Payload，只输出原始的 Node 数据字典列表。
     """
-    def __init__(self, rows_per_file: int = 100):
+    def __init__(self, rows_per_file: int = 50):
         self.rows_per_file = rows_per_file
 
     def clean(self, raw_rows: Iterable) -> Generator:
