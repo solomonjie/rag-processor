@@ -1,10 +1,12 @@
 from contextlib import closing
+import hashlib
 import logging
 import time
 from typing import List, Dict, Any, Optional
+import uuid
 from files.ContentLoaderFactory import ContentLoader
 from database.interfaces import MessageQueueInterface, BaseStore, BaseStatusRegistry
-from database.message import IngestionTaskSchema
+from database.message import TaskMessage
 from files.ParserFactory import ParserFactory
 from logfilter.logging_context import trace_id_var
 from llama_index.core.schema import TextNode
@@ -24,8 +26,7 @@ class IngestionManager:
         self.mq = mq
         
 
-    def start_listening(self, mq_config: dict):
-        self.mq.connect(mq_config)
+    def start_listening(self):
         self.logger.info("IngestionManager 正在运行...")
         
         try:
@@ -41,10 +42,8 @@ class IngestionManager:
     def _handle_task(self, raw_message: str):
         try:
             # 1. 使用 Schema 自动验证并解析消息内容
-            task = IngestionTaskSchema.model_validate_json(raw_message)
-            token = trace_id_var.set(task.file_hash)
-
-            self.logger.info(f"收到合法任务: {task.file_name}")
+            task = TaskMessage.from_json(raw_message)
+            self.logger.info(f"收到合法任务: {task.file_path}")
 
             # 2. 从消息指定的路径读取真实的内容文件,并转换为chunks
             raw_content = ContentLoader.load_content(task.file_path)
@@ -60,46 +59,61 @@ class IngestionManager:
 
             # 3. 将数据插入数据库中
             success = self._process_file_batches(
-                file_name=task.file_name,
-                file_hash=task.file_hash,
+                file_name=task.file_path,
                 chunks=nodes
             )
 
             if success:
-                self.logger.info(f"任务完成: {task.file_name}")
+                self.logger.info(f"任务完成: {task.file_path}")
                 # 后续可以在这里通过 mq 确认消息（ACK）或删除临时文件
         except Exception as e:
             self.logger.error(f"任务处理异常: {str(e)}")
-        finally:
-            if token is not None:
-                trace_id_var.reset(token)
 
-    def _build_nodes(self, raw_content: List[Dict[str, Any]], task: IngestionTaskSchema) -> List[TextNode]:
+    def _build_nodes(self, raw_content: Dict[str, Any], task: TaskMessage) -> List[TextNode]:
         nodes = []
         
-        for block in raw_content:
-            # 构造一个稳定、可追溯的 chunk_id
-            chunk_id = f"{task.file_hash}:{block['block_id']}"
+        # 提取实际的节点列表，新结构在 content -> nodes 下
+        content_data = raw_content.get("content", {})
+        blocks = content_data.get("nodes", [])
         
+        for block in blocks:
+            # 1. 过滤掉 page_content 为空的无效节点
+            if not block.get("page_content"):
+                continue
+                
+            # 2. 获取稳定 ID：优先使用 internal_id，若无则使用 page_content 的哈希
+            inner_id = block.get("metadata").get("internal_id")
+            if not inner_id:
+                inner_id = hashlib.md5(block["page_content"].encode()).hexdigest()
+                
+            # 构造全局唯一的 chunk_id
+            chunk_id = f"{task.file_path}:{inner_id}"
+            
+            # 3. 提取元数据（适配新 JSON 字段）
+            metadata = block.get("metadata", {})
+            
             node = TextNode(
                 id_=chunk_id,          
-                text=block["content"], 
+                text=block["page_content"], 
                 metadata={
-                    "file_name": task.file_name,
-                    "file_hash": task.file_hash,
-                    "block_id": block["block_id"],
-                    "block_type": block["block_type"],
-                    "title": block["title"],
-                    "keywords":  "|".join(block.get("keywords", [])),
-                    "semantic_embedding_keywords": "|".join(block.get("semantic_embedding_keywords", []))
+                    "file_name": task.file_path,
+                    "internal_id": inner_id,
+                    "author": metadata.get("author", ""),
+                    "title": metadata.get("title", ""), # 如果 metadata 里没有 title，可以从 text 第一行截取
+                    "keywords": "|".join(metadata.get("keywords", [])),
+                    "summary": metadata.get("summary", ""),
+                    "insert_date": metadata.get("insert_date", "")
                 }
             )
         
             nodes.append(node)
-        return nodes   
+        
+        return nodes
 
-    def _process_file_batches(self, file_name: str, file_hash: str, chunks: List[TextNode], batch_size: int = 50) -> bool:
+    def _process_file_batches(self, file_name: str, chunks: List[TextNode], batch_size: int = 50) -> bool:
         """处理文件级别的批量入库逻辑"""
+        namespace = uuid.NAMESPACE_DNS
+        file_hash = str(uuid.uuid5(namespace, file_name))
         # 1. 检查文件是否整体已完成
         if self.registry and self.registry.is_file_processed(file_name):
             self.logger.info(f"File {file_name} already fully processed.")

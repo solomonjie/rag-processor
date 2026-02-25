@@ -19,18 +19,12 @@ class ChunkingManager:
         self, 
         consumer: MessageQueueInterface,  # 监听队列：接收来自 Clean 的消息
         publisher: MessageQueueInterface, # 发送队列：发送给 Enrich 的消息
-        consumer_config: Dict[str, Any],         # 包含连接信息
-        publisher_config: Dict[str, Any],         # 包含连接信息
         poll_interval: float = 1.0
     ):
         self.logger = logging.getLogger(__name__)
         self.consumer = consumer
         self.publisher = publisher
         self.poll_interval = poll_interval
-        
-        # 初始化连接
-        self.consumer.connect(consumer_config)
-        self.publisher.connect(publisher_config)
 
     def start(self):
         """启动持续监听循环"""
