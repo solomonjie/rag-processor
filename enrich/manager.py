@@ -42,10 +42,9 @@ class EnrichmentManager:
     async def _main_loop(self):
         """异步主循环：负责监听 MQ"""
         while self.running:
-            loop = asyncio.get_running_loop()
-            raw_msg = await loop.run_in_executor(None, self.consumer.consume)
+            raw_msg = self.consumer.consume()
             if not raw_msg:
-                await asyncio.sleep(self.poll_interval)
+                time.sleep(self.poll_interval)
                 continue
             
             try:

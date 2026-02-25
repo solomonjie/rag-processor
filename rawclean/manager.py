@@ -23,22 +23,10 @@ class CleanManager:
     def __init__(
         self, 
         publisher:MessageQueueInterface,   # 负责分发下游消息
-        mq_config: Dict[str, Any] #包含 topic 等配置
     ):
         # 依赖注入：Manager 不关心这些组件的具体实现（本地还是云端）
         self.logger = logging.getLogger(__name__)
         self.publisher = publisher
-        self.setup_mq(mq_config)
-        
-
-    def setup_mq(self, config: Dict[str, Any]):
-        """初始化消息队列连接"""
-        try:
-            # 调用connect 方法
-            self.publisher.connect(config)
-        except Exception as e:
-            self.logger.error(f"消息队列连接失败: {e}")
-            raise
 
     def process_document(self, source_path: str, storage_path: str):
         """

@@ -7,6 +7,7 @@ from .memoryRegistry_impl import MemoryStatusRegistry
 from .ChromadbVectorStorage import ChromadbServices
 from .MilvusHybridStore import MilvusHybridStore
 from .MemoryMessageQueue import MemoryMessageQueue
+from .redisMemoryMessageQueue import RedisMessageQueue
 from .message import IngestionTaskSchema
 
 
@@ -20,5 +21,6 @@ __all__ = [
     "ChromadbServices",
     "MilvusHybridStore",
     "MemoryMessageQueue",
+    "RedisMessageQueue",
     "IngestionTaskSchema"
 ]
