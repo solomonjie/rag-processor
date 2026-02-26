@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Set
 
+from .message import QueueMessage
+
 class BaseStore(ABC):
     """底层存储的抽象基类"""
     
@@ -71,7 +73,7 @@ class MessageQueueInterface(ABC):
         pass
 
     @abstractmethod
-    def consume(self) -> Optional[Any]:
+    def consume(self) -> Optional[QueueMessage]:
         """获取消息"""
         pass
 

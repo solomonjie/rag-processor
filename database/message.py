@@ -1,6 +1,13 @@
 import time
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional
+from dataclasses import dataclass
+
+@dataclass
+class QueueMessage:
+    """MQ 内部使用的通用包装类"""
+    id: str           # Redis Stream 的消息 ID (例如 '170000000-0')
+    data: Any         # 解码后的业务数据 (TaskMessage 对象或 Dict)
 
 class TaskMessage(BaseModel):
     """标准任务消息：在各个处理阶段之间流动的轻量级信号"""

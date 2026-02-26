@@ -31,26 +31,42 @@ index_group = "index_group"
 worker_name = "worker"
 
 async def run_clean_pipeline():
-    mq = MemoryMessageQueue()
-    mq_config = {
+    # 实例化并连接
+    # 假设 RedisMessageQueue 是您之前实现的类
+    clean_worker_name = f"{worker_name}_clean_{1}"
+    consume = RedisMessageQueue()
+    consume_config = {
+        'host': 'localhost',        # Redis 服务器地址
+        'port': 6379,               # 端口
+        'topic': clean_topic,       # Stream 名称 (Topic)
+        'group': clean_group,       # 消费者组名称
+        'consumer_name': clean_worker_name # 当前消费者标识
+    }
+    consume.connect(consume_config)
+
+    publish = RedisMessageQueue()
+    publish_config ={
         'host': 'localhost',        # Redis 服务器地址
         'port': 6379,               # 端口
         'topic': chunk_topic,       # Stream 名称 (Topic)
         'group': clean_group,       # 消费者组名称
-        'consumer_name': f"{worker_name}_clean_{uuid.uuid4().hex}" # 当前消费者标识
+        'consumer_name': clean_worker_name # 当前消费者标识
     }
-
-    # 2. 实例化并连接
-    # 假设 RedisMessageQueue 是您之前实现的类
-    mq = RedisMessageQueue()
-    mq.connect(mq_config)
+    publish.connect(publish_config)
 
     manager = CleanManager(
-        publisher=mq
+        consumer=consume,
+        publisher=publish
     )
-    save_path = "data/pipeline.json"
-    manager.process_document('data/pipeline.xlsx', save_path)
-    print("Clean Done")
+
+    # task = TaskMessage(
+    #     file_path="data/pipeline.xlsx",
+    #     stage="Clean",
+    #     trace_id=str(uuid.uuid4())
+    # )
+    # consume.produce(task.to_json())
+
+    manager.start()
 
 async def run_chunk_pipeline():
     chunk_worker_name = f"{worker_name}_chunk_{uuid.uuid4().hex}"
@@ -185,7 +201,7 @@ async def mqtest():
     # 第一次 consume：此时 _check_pending 为 True，扫描 PEL 为空，然后读取 '>' 获取新消息
     msg_v1 = consume_v1.consume()
     if msg_v1:
-        received_task = TaskMessage.from_json(msg_v1['data'])
+        received_task = TaskMessage.from_json(msg_v1.data)
         print(f"[+] 消费者 A 收到消息: {received_task.trace_id}, 当前 _check_pending: {consume_v1._check_pending}")
         # 注意：这里故意不调用 consume_v1.ack(msg_v1['id'])
     
@@ -202,12 +218,12 @@ async def mqtest():
     # 它应该从 ID '0' 读到刚才没确认的那条消息，而不是阻塞等待新消息
     msg_v2 = consume_v2.consume()
     
-    if msg_v2 and msg_v2['id'] == msg_v1['id']:
-        recovered_task = TaskMessage.from_json(msg_v2['data'])
+    if msg_v2 and msg_v2.id == msg_v1.id:
+        recovered_task = TaskMessage.from_json(msg_v2.data)
         print(f"[SUCCESS] 成功找回 Pending 消息: {recovered_task.trace_id}")
         
         # 此时执行 ACK，验证状态变更
-        ack_res = consume_v2.ack(msg_v2['id'])
+        ack_res = consume_v2.ack(msg_v2.id)
         print(f"[*] 执行 ACK 结果: {ack_res}, 当前 _check_pending: {consume_v2._check_pending}")
     else:
         print("[FAILED] 未能找回 Pending 消息或消息不匹配。")

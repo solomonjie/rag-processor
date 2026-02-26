@@ -2,6 +2,8 @@ import redis
 import json
 import logging
 from typing import Any, Optional, Dict
+
+from .message import QueueMessage
 from .interfaces import MessageQueueInterface
 
 class RedisMessageQueue(MessageQueueInterface):
@@ -31,7 +33,7 @@ class RedisMessageQueue(MessageQueueInterface):
         data = {"payload": json.dumps(message) if not isinstance(message, str) else message}
         return self.client.xadd(self.stream, data)
 
-    def consume(self) -> Optional[Dict[str, Any]]:
+    def consume(self) -> Optional[QueueMessage]:
         """
         自动判定读取逻辑：
         1. 只要 _check_pending 为 True，就一直尝试读 ID '0'。
@@ -85,10 +87,12 @@ class RedisMessageQueue(MessageQueueInterface):
                     return None
                 
                 msg_id, content = messages[0]
-                return {
-                    "id": msg_id,
-                    "data": json.loads(content['payload'])
-                }
+                payload_data = json.loads(content['payload'])
+
+                return QueueMessage(
+                    id=msg_id,
+                    data=payload_data
+                )
             except (IndexError, KeyError, TypeError):
                 return None
 
