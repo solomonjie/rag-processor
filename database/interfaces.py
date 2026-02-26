@@ -76,6 +76,14 @@ class MessageQueueInterface(ABC):
         pass
 
     @abstractmethod
+    def ack(self, message_id: str) -> bool:
+        """
+        显式确认消息已处理完毕
+        :param message_id: 消息的唯一标识
+        """
+        pass
+
+    @abstractmethod
     def produce(self, message: Any):
         """发送消息"""
         pass
