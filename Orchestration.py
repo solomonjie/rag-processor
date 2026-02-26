@@ -59,17 +59,10 @@ async def run_clean_pipeline():
         publisher=publish
     )
 
-    # task = TaskMessage(
-    #     file_path="data/pipeline.xlsx",
-    #     stage="Clean",
-    #     trace_id=str(uuid.uuid4())
-    # )
-    # consume.produce(task.to_json())
-
     manager.start()
 
 async def run_chunk_pipeline():
-    chunk_worker_name = f"{worker_name}_chunk_{uuid.uuid4().hex}"
+    chunk_worker_name = f"{worker_name}_chunk_{1}"
     consume = RedisMessageQueue()
     consume_config = {
         'host': 'localhost',        # Redis 服务器地址
@@ -98,7 +91,7 @@ async def run_chunk_pipeline():
 
 #1,000,000 cost
 async def run_enrich_pipeline():
-    enrich_worker_name = f"{worker_name}_enrich_{uuid.uuid4().hex}"
+    enrich_worker_name = f"{worker_name}_enrich_{1}"
     consume = RedisMessageQueue()
     consume_config = {
         'host': 'localhost',        # Redis 服务器地址
@@ -133,12 +126,13 @@ async def run_ingestion_pipeline():
     registry = MemoryStatusRegistry()
     emb_model = TextEmbeddingService()
     mq = RedisMessageQueue()
+    index_worker_name = f"{worker_name}_index_{1}"
     mq_config = {
         'host': 'localhost',        # Redis 服务器地址
         'port': 6379,               # 端口
         'topic': index_topic,       # Stream 名称 (Topic)
         'group': index_group,       # 消费者组名称
-        'consumer_name': "worker_index_479882de8e294a7098a76fc3447164c8" # 当前消费者标识
+        'consumer_name': index_worker_name # 当前消费者标识
     }
     mq.connect(mq_config)
 
@@ -252,4 +246,4 @@ if __name__ == "__main__":
     for handler in root_logger.handlers:
         handler.addFilter(TraceIdFilter())
 
-    asyncio.run(mqtest())
+    asyncio.run(run_enrich_pipeline())

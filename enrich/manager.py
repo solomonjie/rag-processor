@@ -12,7 +12,7 @@ from .EnrichmentMaster import EnrichmentMaster
 from files.ContentLoaderFactory import ContentLoader
 from files.ContentSaverFactory import ContentSaver
 from files.DocumentFormat import RAGTaskPayload
-from database.message import TaskMessage 
+from database.message import TaskMessage,QueueMessage
 
 class EnrichmentManager:
     def __init__(
@@ -52,10 +52,10 @@ class EnrichmentManager:
             except Exception as e:
                 self.logger.error(f"处理任务过程中发生异常: {e}", exc_info=True)
 
-    async def _process_task(self, raw_msg: Any):
+    async def _process_task(self, raw_msg: QueueMessage):
         # 1. 消息解码 (TaskMessage 模式)
-        task = TaskMessage.from_json(raw_msg)
-        self.logger.info(f"开始丰富化处理: {task.file_path} (TraceID: {task.trace_id})")
+        task = TaskMessage.from_json(raw_msg.data)
+        self.logger.info(f"开始丰富化处理: {task.file_path} (MessageID: {task.trace_id})")
 
         # 2. 加载数据
         stream = ContentLoader.load_content(task.file_path)
@@ -78,6 +78,7 @@ class EnrichmentManager:
 
         # 6. 持久化并发送下一阶段消息
         self._finish_stage(task, payload)
+        self.consumer.ack(raw_msg.id) 
 
     def _finish_stage(self, task, payload:RAGTaskPayload):
         base_path, ext = os.path.splitext(task.file_path)

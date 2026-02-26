@@ -7,7 +7,7 @@ from typing import Dict, Any, List
 
 # 导入工具类
 from constants import ChunkMethod, EnrichmentMethod
-from database.message import TaskMessage
+from database.message import TaskMessage,QueueMessage
 from files.ContentLoaderFactory import ContentLoader
 from files.ContentSaverFactory import ContentSaver
 from database.interfaces import MessageQueueInterface
@@ -60,7 +60,7 @@ class ChunkingManager:
         if not message:
             return False
 
-        task = TaskMessage.from_json(message)
+        task = TaskMessage.from_json(message.data)
         self.logger.info(f"监听到新消息，处理路径: {task.file_path}")
 
         try:
@@ -120,7 +120,7 @@ class ChunkingManager:
                 trace_id=task.trace_id
             )
             self.publisher.produce(next_msg.to_json())
-            
+            self.consumer.ack(message.id)
             return True
         except Exception as e:
             self.logger.error(f"处理失败: {task.file_path if 'task' in locals() else 'unknown'}, 错误: {e}")

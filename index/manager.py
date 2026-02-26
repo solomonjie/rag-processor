@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 import uuid
 from files.ContentLoaderFactory import ContentLoader
 from database.interfaces import MessageQueueInterface, BaseStore, BaseStatusRegistry
-from database.message import TaskMessage
+from database.message import TaskMessage,QueueMessage
 from files.ParserFactory import ParserFactory
 from logfilter.logging_context import trace_id_var
 from llama_index.core.schema import TextNode
@@ -39,10 +39,10 @@ class IngestionManager:
         except KeyboardInterrupt:
             self.mq.close()
 
-    def _handle_task(self, raw_message: str):
+    def _handle_task(self, raw_message: QueueMessage):
         try:
             # 1. 使用 Schema 自动验证并解析消息内容
-            task = TaskMessage.from_json(raw_message)
+            task = TaskMessage.from_json(raw_message.data)
             self.logger.info(f"收到合法任务: {task.file_path}")
 
             # 2. 从消息指定的路径读取真实的内容文件,并转换为chunks
@@ -65,7 +65,7 @@ class IngestionManager:
 
             if success:
                 self.logger.info(f"任务完成: {task.file_path}")
-                # 后续可以在这里通过 mq 确认消息（ACK）或删除临时文件
+                self.mq.ack(raw_message.id) 
         except Exception as e:
             self.logger.error(f"任务处理异常: {str(e)}")
 
