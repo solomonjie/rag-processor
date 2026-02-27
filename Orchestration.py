@@ -1,10 +1,8 @@
+import argparse
 import logging
-import uuid
 from constants import VectorDatabaseConst
-from database.message import TaskMessage
 from llm.llm_client import LLMClient
 from chunking.manager import ChunkingManager
-from database.MemoryMessageQueue import MemoryMessageQueue
 from database.redisMemoryMessageQueue import RedisMessageQueue
 from database.MilvusHybridStore import MilvusHybridStore
 from enrich.EnrichmentMaster import EnrichmentMaster
@@ -30,10 +28,10 @@ index_group = "index_group"
 
 worker_name = "worker"
 
-async def run_clean_pipeline():
+async def run_clean_pipeline(work_id: str):
     # 实例化并连接
     # 假设 RedisMessageQueue 是您之前实现的类
-    clean_worker_name = f"{worker_name}_clean_{1}"
+    clean_worker_name = f"{worker_name}_clean_{work_id}"
     consume = RedisMessageQueue()
     consume_config = {
         'host': 'localhost',        # Redis 服务器地址
@@ -61,8 +59,8 @@ async def run_clean_pipeline():
 
     manager.start()
 
-async def run_chunk_pipeline():
-    chunk_worker_name = f"{worker_name}_chunk_{1}"
+async def run_chunk_pipeline(work_id: str):
+    chunk_worker_name = f"{worker_name}_chunk_{work_id}"
     consume = RedisMessageQueue()
     consume_config = {
         'host': 'localhost',        # Redis 服务器地址
@@ -90,8 +88,8 @@ async def run_chunk_pipeline():
     manager.start()
 
 #1,000,000 cost
-async def run_enrich_pipeline():
-    enrich_worker_name = f"{worker_name}_enrich_{1}"
+async def run_enrich_pipeline(work_id: str):
+    enrich_worker_name = f"{worker_name}_enrich_{work_id}"
     consume = RedisMessageQueue()
     consume_config = {
         'host': 'localhost',        # Redis 服务器地址
@@ -121,12 +119,12 @@ async def run_enrich_pipeline():
     )
     await manager.start()
 
-async def run_ingestion_pipeline():
+async def run_ingestion_pipeline(work_id: str):
     # 1. 组装依赖 (DI)
     registry = MemoryStatusRegistry()
     emb_model = TextEmbeddingService()
     mq = RedisMessageQueue()
-    index_worker_name = f"{worker_name}_index_{1}"
+    index_worker_name = f"{worker_name}_index_{work_id}"
     mq_config = {
         'host': 'localhost',        # Redis 服务器地址
         'port': 6379,               # 端口
@@ -152,98 +150,58 @@ async def run_ingestion_pipeline():
 
     manager.start_listening()
 
-async def mqtest():
-    # 基础配置定义
-    chunk_topic = "test_chunk_stream"
-    chunk_group = "test_group"
-    worker_name = "worker_test"
-    chunk_worker_name = f"{worker_name}_chunk_1"
-
-    # --- 阶段 1: 初始化生产者并发送消息 ---
-    publish = RedisMessageQueue()
-    publish_config = {
-        'host': 'localhost',
-        'port': 6379,
-        'topic': chunk_topic,
-        'group': chunk_group,
-        'consumer_name': "producer_1"
-    }
-    publish.connect(publish_config)
-
-    # 创建测试消息
-    task = TaskMessage(
-        file_path="/data/test.json",
-        stage="chunking",
-        trace_id=str(uuid.uuid4())
+async def main():
+    # 1. 配置命令行参数解析
+    parser = argparse.ArgumentParser(description="RAG Pipeline Worker Orchestrator")
+    
+    parser.add_argument(
+        "--type", 
+        choices=['clean', 'chunk', 'enrich', 'index'], 
+        required=True, 
+        help="指定启动的 Worker 类型"
     )
     
-    print(f"[*] 生产者：发送任务 {task.trace_id}")
-    publish.produce(task.to_json())
+    parser.add_argument(
+        "--id", 
+        type=int, 
+        default=1, 
+        help="Worker 的实例 ID，用于区分并发消费者 (默认: 1)"
+    )
 
-    # --- 阶段 2: 消费者初次消费，但不 ACK (模拟崩溃) ---
-    print("\n[!] 模拟消费者 A 启动并消费消息，但【不执行 ACK】...")
-    consume_v1 = RedisMessageQueue()
-    consume_config = {
-        'host': 'localhost',
-        'port': 6379,
-        'topic': chunk_topic,
-        'group': chunk_group,
-        'consumer_name': chunk_worker_name
-    }
-    consume_v1.connect(consume_config)
+    args = parser.parse_args()
 
-    # 第一次 consume：此时 _check_pending 为 True，扫描 PEL 为空，然后读取 '>' 获取新消息
-    msg_v1 = consume_v1.consume()
-    if msg_v1:
-        received_task = TaskMessage.from_json(msg_v1.data)
-        print(f"[+] 消费者 A 收到消息: {received_task.trace_id}, 当前 _check_pending: {consume_v1._check_pending}")
-        # 注意：这里故意不调用 consume_v1.ack(msg_v1['id'])
-    
-    consume_v1.close()
-    print("[!] 消费者 A 已关闭（未确认消息）。")
-
-    # --- 阶段 3: 消费者重启，验证自动读取 Pending ---
-    print("\n[*] 模拟消费者 A 重启，验证 Pending 自动读取逻辑...")
-    consume_v2 = RedisMessageQueue()
-    # 使用相同的配置（尤其是相同的 consumer_name）
-    consume_v2.connect(consume_config)
-
-    # 第二次 consume：此时 _check_pending 默认为 True
-    # 它应该从 ID '0' 读到刚才没确认的那条消息，而不是阻塞等待新消息
-    msg_v2 = consume_v2.consume()
-    
-    if msg_v2 and msg_v2.id == msg_v1.id:
-        recovered_task = TaskMessage.from_json(msg_v2.data)
-        print(f"[SUCCESS] 成功找回 Pending 消息: {recovered_task.trace_id}")
-        
-        # 此时执行 ACK，验证状态变更
-        ack_res = consume_v2.ack(msg_v2.id)
-        print(f"[*] 执行 ACK 结果: {ack_res}, 当前 _check_pending: {consume_v2._check_pending}")
-    else:
-        print("[FAILED] 未能找回 Pending 消息或消息不匹配。")
-
-    # --- 阶段 4: 再次 consume，验证 PEL 为空后转向新消息 ---
-    # 此时 _check_pending 应该已经是 False，会尝试读 '>'
-    print("\n[*] 验证 PEL 清空后状态...")
-    msg_v3 = consume_v2.consume() # 这里会因为没有新消息而阻塞 1s 或返回 None
-    if msg_v3 is None:
-        print(f"[+] PEL 已空，消费者进入监听新消息状态。当前 _check_pending: {consume_v2._check_pending}")
-
-    consume_v2.close()
-
-if __name__ == "__main__":
-    # 检查是否传入了文件路径
-    if len(sys.argv) < 2:
-        print("Usage: python orchestration.py <path_to_json_file>")
-        sys.exit(1)
-    
+    # 2. 配置日志
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(trace_id)s | %(name)s | %(message)s"
     )
-    
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
         handler.addFilter(TraceIdFilter())
 
-    asyncio.run(run_enrich_pipeline())
+    logging.info(f"正在启动 Worker 类型: {args.type}, 实例 ID: {args.id}")
+
+    # 3. 根据类型跳转到对应的 pipeline
+    # 注意：你可以修改你的函数接收 args.id，从而动态生成 worker_name
+    if args.type == 'clean':
+        await run_clean_pipeline(args.id) # 如果需要，可改为 run_clean_pipeline(args.id)
+    elif args.type == 'chunk':
+        await run_chunk_pipeline(args.id)
+    elif args.type == 'enrich':
+        await run_enrich_pipeline(args.id)
+    elif args.type == 'index':
+        await run_ingestion_pipeline(args.id)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Worker 已手动停止")
+        sys.exit(0)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Worker 已手动停止")
+        sys.exit(0)
