@@ -117,7 +117,7 @@ class IngestionManager:
         # 1. 检查文件是否整体已完成
         if self.registry and self.registry.is_file_processed(file_name):
             self.logger.info(f"File {file_name} already fully processed.")
-            return
+            return True
 
         # 获取当前文件已处理的 chunk 集合以实现续传
         processed_chunk_ids = self.registry.get_processed_chunks(file_name) if self.registry else set()
