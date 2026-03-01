@@ -1,0 +1,21 @@
+# 排除 Python 字节码缓存
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# 排除虚拟环境
+.venv/
+venv/
+env/
+.env
+.dockerenv
+
+# 排除版本控制和本地日志
+.git/
+.gitignore
+*.log
+data/
+
+# 排除 IDE 配置
+.vscode/
+.idea/

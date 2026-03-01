@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 from constants import VectorDatabaseConst
 from llm.llm_client import LLMClient
 from chunking.manager import ChunkingManager
@@ -28,14 +29,14 @@ index_group = "index_group"
 
 worker_name = "worker"
 
-async def run_clean_pipeline(work_id: str):
+async def run_clean_pipeline(work_id: str, redis_host: str, redis_port: int):
     # 实例化并连接
     # 假设 RedisMessageQueue 是您之前实现的类
     clean_worker_name = f"{worker_name}_clean_{work_id}"
     consume = RedisMessageQueue()
     consume_config = {
-        'host': 'localhost',        # Redis 服务器地址
-        'port': 6379,               # 端口
+        'host': redis_host,        # Redis 服务器地址
+        'port': redis_port,               # 端口
         'topic': clean_topic,       # Stream 名称 (Topic)
         'group': clean_group,       # 消费者组名称
         'consumer_name': clean_worker_name # 当前消费者标识
@@ -44,8 +45,8 @@ async def run_clean_pipeline(work_id: str):
 
     publish = RedisMessageQueue()
     publish_config ={
-        'host': 'localhost',        # Redis 服务器地址
-        'port': 6379,               # 端口
+        'host': redis_host,        # Redis 服务器地址
+        'port': redis_port,               # 端口
         'topic': chunk_topic,       # Stream 名称 (Topic)
         'group': clean_group,       # 消费者组名称
         'consumer_name': clean_worker_name # 当前消费者标识
@@ -59,12 +60,12 @@ async def run_clean_pipeline(work_id: str):
 
     manager.start()
 
-async def run_chunk_pipeline(work_id: str):
+async def run_chunk_pipeline(work_id: str, redis_host: str, redis_port: int):
     chunk_worker_name = f"{worker_name}_chunk_{work_id}"
     consume = RedisMessageQueue()
     consume_config = {
-        'host': 'localhost',        # Redis 服务器地址
-        'port': 6379,               # 端口
+        'host': redis_host,        # Redis 服务器地址
+        'port': redis_port,               # 端口
         'topic': chunk_topic,       # Stream 名称 (Topic)
         'group': chunk_group,       # 消费者组名称
         'consumer_name': chunk_worker_name # 当前消费者标识
@@ -73,8 +74,8 @@ async def run_chunk_pipeline(work_id: str):
 
     publish = RedisMessageQueue()
     publish_config ={
-        'host': 'localhost',        # Redis 服务器地址
-        'port': 6379,               # 端口
+        'host': redis_host,        # Redis 服务器地址
+        'port': redis_port,               # 端口
         'topic': enrich_topic,       # Stream 名称 (Topic)
         'group': chunk_group,       # 消费者组名称
         'consumer_name': chunk_worker_name # 当前消费者标识
@@ -88,12 +89,12 @@ async def run_chunk_pipeline(work_id: str):
     manager.start()
 
 #1,000,000 cost
-async def run_enrich_pipeline(work_id: str):
+async def run_enrich_pipeline(work_id: str, redis_host: str, redis_port: int):
     enrich_worker_name = f"{worker_name}_enrich_{work_id}"
     consume = RedisMessageQueue()
     consume_config = {
-        'host': 'localhost',        # Redis 服务器地址
-        'port': 6379,               # 端口
+        'host': redis_host,        # Redis 服务器地址
+        'port': redis_port,               # 端口
         'topic': enrich_topic,       # Stream 名称 (Topic)
         'group': enrich_group,       # 消费者组名称
         'consumer_name': enrich_worker_name # 当前消费者标识
@@ -102,8 +103,8 @@ async def run_enrich_pipeline(work_id: str):
 
     publish = RedisMessageQueue()
     publish_config = {
-        'host': 'localhost',        # Redis 服务器地址
-        'port': 6379,               # 端口
+        'host': redis_host,        # Redis 服务器地址
+        'port': redis_port,               # 端口
         'topic': index_topic,       # Stream 名称 (Topic)
         'group': enrich_group,       # 消费者组名称
         'consumer_name': enrich_worker_name # 当前消费者标识
@@ -119,15 +120,15 @@ async def run_enrich_pipeline(work_id: str):
     )
     await manager.start()
 
-async def run_ingestion_pipeline(work_id: str):
+async def run_ingestion_pipeline(work_id: str, redis_host: str, redis_port: int):
     # 1. 组装依赖 (DI)
     registry = MemoryStatusRegistry()
     emb_model = TextEmbeddingService()
     mq = RedisMessageQueue()
     index_worker_name = f"{worker_name}_index_{work_id}"
     mq_config = {
-        'host': 'localhost',        # Redis 服务器地址
-        'port': 6379,               # 端口
+        'host': redis_host,        # Redis 服务器地址
+        'port': redis_port,               # 端口
         'topic': index_topic,       # Stream 名称 (Topic)
         'group': index_group,       # 消费者组名称
         'consumer_name': index_worker_name # 当前消费者标识
@@ -135,7 +136,7 @@ async def run_ingestion_pipeline(work_id: str):
     mq.connect(mq_config)
 
     storage_config = {
-        "uri":VectorDatabaseConst.MilvusDefaultServer.value,
+        "uri":os.getenv('Milvus_Server_URL'),
         "enable_sparse":True,
         "enable_dense":True,
         "dim":512,
@@ -183,21 +184,16 @@ async def main():
 
     # 3. 根据类型跳转到对应的 pipeline
     # 注意：你可以修改你的函数接收 args.id，从而动态生成 worker_name
+    redis_host = os.getenv('Redis_Host')
+    redis_port = os.getenv('Redis_Port')
     if args.type == 'clean':
-        await run_clean_pipeline(args.id) # 如果需要，可改为 run_clean_pipeline(args.id)
+        await run_clean_pipeline(args.id,redis_host, redis_port) # 如果需要，可改为 run_clean_pipeline(args.id)
     elif args.type == 'chunk':
-        await run_chunk_pipeline(args.id)
+        await run_chunk_pipeline(args.id,redis_host, redis_port)
     elif args.type == 'enrich':
-        await run_enrich_pipeline(args.id)
+        await run_enrich_pipeline(args.id,redis_host, redis_port)
     elif args.type == 'index':
-        await run_ingestion_pipeline(args.id)
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Worker 已手动停止")
-        sys.exit(0)
+        await run_ingestion_pipeline(args.id,redis_host, redis_port)
 
 if __name__ == "__main__":
     try:

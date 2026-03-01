@@ -24,3 +24,11 @@ docker run -d --gpus all --shm-size 4g -p 6000:8000 -v /c/Work/Model/Qwen3-0.6B:
 
 Build external dev redis mq
 docker run -d --name redis-dev -p 6379:6379 -v C:\enlist\rag-processor\data:/data redis:8.6 redis-server --appendonly yes
+
+docker worker
+docker build -t rag-worker:latest .
+docker run -d --name worker-clean --env-file .dockerenv -v C:\enlist\rag-processor\data:/data rag-worker:latest --type clean --id 1
+docker run -d --name worker-chunk --env-file .dockerenv -v C:\enlist\rag-processor\data:/data rag-worker:latest --type chunk --id 1
+docker run -d --name worker-enrich --env-file .dockerenv -v C:\enlist\rag-processor\data:/data rag-worker:latest --type enrich --id 1
+docker run -d --name worker-index --env-file .dockerenv -v C:\enlist\rag-processor\data:/data rag-worker:latest --type index --id 1
+
