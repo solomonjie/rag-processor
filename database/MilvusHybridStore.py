@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Optional
 from llama_index.vector_stores.milvus import MilvusVectorStore
 from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.core.vector_stores.types import VectorStoreQueryMode
+from llama_index.vector_stores.milvus.utils import BM25BuiltInFunction
 from constants import  VectorDatabaseConst
 from .interfaces import HybridStoreInterface
 
@@ -31,6 +32,13 @@ class MilvusHybridStore(HybridStoreInterface):
         # 2. 读取功能开关
         enable_sparse = config.get("enable_sparse", True)
         enable_dense = config.get("enable_dense", True) 
+        
+        bm25_function = BM25BuiltInFunction(
+            analyzer_params={
+                "tokenizer": "jieba",
+                "filter": ["cnalphanumonly"]
+            }
+        )
 
         if not enable_sparse and not enable_dense:
             raise ValueError("Configuration Error: At least one of 'enable_sparse' or 'enable_dense' must be True.")
@@ -44,6 +52,7 @@ class MilvusHybridStore(HybridStoreInterface):
                 dim=config.get("dim", 512) if enable_dense else None,
                 enable_sparse=enable_sparse,
                 enable_dense=enable_dense,
+                sparse_embedding_function=bm25_function,
                 overwrite=config.get("overwrite", False)
             )
             
