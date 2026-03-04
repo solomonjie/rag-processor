@@ -32,3 +32,5 @@ docker run -d --name worker-chunk --env-file .dockerenv -v C:\enlist\rag-process
 docker run -d --name worker-enrich --env-file .dockerenv -v C:\enlist\rag-processor\data:/data rag-worker:latest --type enrich --id 1
 docker run -d --name worker-index --env-file .dockerenv -v C:\enlist\rag-processor\data:/data rag-worker:latest --type index --id 1
 
+docker millivus
+standalone.bat start
