@@ -13,6 +13,7 @@ from files.ContentLoaderFactory import ContentLoader
 from files.ContentSaverFactory import ContentSaver
 from files.DocumentFormat import RAGTaskPayload
 from database.message import TaskMessage,QueueMessage
+from database.tagmanger import TagManager
 
 class EnrichmentManager:
     def __init__(
@@ -20,6 +21,7 @@ class EnrichmentManager:
         consumer: MessageQueueInterface,  # 接收来自 Chunk 的消息
         publisher:MessageQueueInterface, # 发送给 Index 的消息
         enrich_master:EnrichmentMaster, # 封装了 LLM 编排逻辑的 Master
+        tag_manager:TagManager,
         poll_interval: float = 5.0
     ):
         self.logger = logging.getLogger(__name__)
@@ -27,6 +29,7 @@ class EnrichmentManager:
         self.publisher = publisher
         self.master = enrich_master
         self.poll_interval = poll_interval
+        self.tag_manager = tag_manager
         self.running = False
 
     async def start(self):
@@ -69,9 +72,11 @@ class EnrichmentManager:
             self._finish_stage(task, payload)
             return
 
+        tag_list = self.tag_manager.get_all_tags() if EnrichmentMethod.TAGGING in methods else []
+
         # 4. 调用 Master 进行批量/并发丰富化 (此处逻辑在 Master 中实现)
         # 注意：这里会修改 payload.content.nodes
-        await self.master.process_payload(payload)
+        await self.master.process_payload(payload, tag_list)
 
         # 5. 状态转换：清空方法列表防止重复执行
         payload.content.pipeline_instructions.enrichment_methods = [EnrichmentMethod.NONE]

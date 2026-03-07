@@ -11,6 +11,7 @@ from enrich.manager import EnrichmentManager
 from index.manager import IngestionManager
 from embedding.TextEmbeddingsInference import TextEmbeddingService
 from database.memoryRegistry_impl import MemoryStatusRegistry
+from database.tagmanger import TagManager
 from logfilter.logging_context import TraceIdFilter
 import sys
 import asyncio
@@ -113,10 +114,17 @@ async def run_enrich_pipeline(work_id: str, redis_host: str, redis_port: int):
     
     master = EnrichmentMaster(LLMClient())
 
+    storage_config = {
+        "uri":os.getenv('Milvus_Server_URL'),
+        "collection_name":"tag_collection"
+    }
+    tag_manager = TagManager(storage_config)
+
     manager = EnrichmentManager(
         consumer=consume,
         publisher=publish,
-        enrich_master=master
+        enrich_master=master,
+        tag_manager=tag_manager
     )
     await manager.start()
 

@@ -6,6 +6,7 @@ from .interfaces import MessageQueueInterface
 from .memoryRegistry_impl import MemoryStatusRegistry
 from .ChromadbVectorStorage import ChromadbServices
 from .MilvusHybridStore import MilvusHybridStore
+from .tagmanger import TagManager
 from .MemoryMessageQueue import MemoryMessageQueue
 from .redisMemoryMessageQueue import RedisMessageQueue
 from .message import QueueMessage
@@ -23,5 +24,6 @@ __all__ = [
     "MemoryMessageQueue",
     "RedisMessageQueue",
     "IngestionTaskSchema",
-    "QueueMessage"
+    "QueueMessage",
+    "TagManager"
 ]
