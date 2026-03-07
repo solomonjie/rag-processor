@@ -101,7 +101,8 @@ class ChunkingManager:
                 # 示例：默认分块后进行摘要和关键词提取
                 payload.content.pipeline_instructions.enrichment_methods = [
                     EnrichmentMethod.SUMMARY, 
-                    EnrichmentMethod.KEYWORDS
+                    EnrichmentMethod.KEYWORDS,
+                    EnrichmentMethod.TAGGING
                 ]
             
             # 7. 持久化并发送下一阶段消息
