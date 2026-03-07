@@ -101,6 +101,7 @@ class IngestionManager:
                     "author": metadata.get("author", ""),
                     "title": metadata.get("title", ""), # 如果 metadata 里没有 title，可以从 text 第一行截取
                     "keywords": metadata.get("keywords", []),
+                    "tags": metadata.get("tags", []),
                     "summary": metadata.get("summary", ""),
                     "insert_date": metadata.get("insert_date", "")
                 }

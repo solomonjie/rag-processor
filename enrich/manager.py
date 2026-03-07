@@ -36,18 +36,23 @@ class EnrichmentManager:
         """同步入口：负责启动异步大循环"""
         self.running = True
         self.logger.info("EnrichmentManager 已启动...")
+        refresh_task = asyncio.create_task(self.tag_manager.start_background_refresh())
         
         try:
             await self._main_loop()
-        except KeyboardInterrupt:
+        except Exception as e:
             self.stop()
+            self.logger.error(f"主循环异常: {e}")
+        finally:
+            self.tag_manager.stop_background_refresh()
+            refresh_task.cancel()
 
     async def _main_loop(self):
         """异步主循环：负责监听 MQ"""
         while self.running:
             raw_msg = self.consumer.consume()
             if not raw_msg:
-                time.sleep(self.poll_interval)
+                await asyncio.sleep(self.poll_interval)
                 continue
             
             try:
