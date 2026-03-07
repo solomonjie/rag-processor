@@ -6,86 +6,95 @@ from typing import List, Dict, Any, Optional
 from llm.llm_client import LLMClient
 from constants import EnrichmentMethod
 from files.DocumentFormat import RAGTaskPayload, Node
-from .strategies.SummaryStrategy import SummaryStrategy
-from .strategies.KeywordStrategy import KeywordStrategy
-from .strategies.QuestionStrategy import QuestionStrategy
 from .interfaces import BaseEnrichmentStrategy
 
 class EnrichmentMaster:
+    UNIFIED_PROMPT_TEMPLATE = """
+你是一个专业的内容分析与结构化信息抽取系统。请仔细阅读【待分析文本】，并一次性完成以下任务。
+
+### 任务指令：
+1. **摘要 (summary)**：用一句话准确概括核心内容，字数严格控制在 50 字以内。
+2. **关键词 (keywords)**：提取 3-5 个最能代表文本主题的专业词汇，以字符串数组形式返回。
+3. **标签分类 (tags)**：
+   - 从下方的【候选标签列表】中选出与内容最贴近的标签。
+   - **必须且只能从列表中选择**；严禁创造、改写或拼接任何新标签。
+   - 若文本对应多个标签，最多选 3 个，并按相关度由高到低排列。
+   - 若内容与任何标签都不匹配，则输出 ["其他"]。
+
+### 候选标签列表（JSON）：
+{labels_info}
+
+### 输出要求：
+- 必须只返回一个纯 JSON 对象，不要包含 Markdown 标签或任何多余文字。
+- JSON 结构必须严格符合以下定义：
+{{
+  "summary": "文本摘要内容",
+  "keywords": ["关键词1", "关键词2", "关键词3"],
+  "tags": ["标签1", "标签2"]
+}}
+
+### 待分析文本：
+---
+{content}
+---
+"""
+
     def __init__(self, llm_client: LLMClient, max_concurrency: int = 5):
         self.llm_client = llm_client
         self.logger = logging.getLogger(__name__)
-        self._strategy_map = {
-            EnrichmentMethod.SUMMARY: SummaryStrategy(),
-            EnrichmentMethod.KEYWORDS: KeywordStrategy(),
-            EnrichmentMethod.QUESTIONS:QuestionStrategy()
-        }
         self.semaphore = asyncio.Semaphore(max_concurrency)
 
-    async def process_payload(self, payload: RAGTaskPayload):
+    async def process_payload(self, payload: RAGTaskPayload, all_tags: List[str]):
         """
         供 Manager 调用的核心入口：将所有 Node 分发为独立的异步任务
         """
         methods = payload.content.pipeline_instructions.enrichment_methods
-        active_strategies = [self._strategy_map[m] for m in methods if m in self._strategy_map]
-        
-        if not active_strategies:
-            return
-
         nodes = [n for n in payload.content.nodes if n.page_content.strip()]
         
         if not nodes:
             return
 
-        self.logger.info(f"开始处理 {len(nodes)} 个节点的丰富化任务 (并发限制: {self.semaphore._value})...")
+        labels_info_str = json.dumps(all_tags, ensure_ascii=False)
 
-        # 1. 为每个节点创建独立的协程任务
-        tasks = [self._enrich_single_node(node, active_strategies) for node in nodes]
+        self.logger.info(f"执行丰富化，节点数: {len(nodes)}")
 
-        # 2. 并发执行并等待全部完成
+        tasks = [
+            self._enrich_single_node(node, labels_info_str, methods) 
+            for node in nodes
+        ]
         await asyncio.gather(*tasks)
-        self.logger.info("所有节点丰富化处理完成。")
 
-    async def _enrich_single_node(self, node: Node, strategies: List[BaseEnrichmentStrategy]):
-        """
-        单节点处理器：负责单个 Node 的 Prompt 构建、调用和结果回填
-        """
+    async def _enrich_single_node(self, node: Node, labels_info: str, requested_methods: List[str]):
         async with self.semaphore:
-            prompt = self._build_single_prompt(node.page_content, strategies)
+            prompt = self.UNIFIED_PROMPT_TEMPLATE.format(
+                labels_info=labels_info,
+                content=node.page_content
+            )
             
             try:
-                # 调用 LLM
                 response = await self.llm_client.get_llm().acomplete(prompt)
                 response_text = str(response.text) if hasattr(response, 'text') else str(response)
-    
-                # 解析返回的 JSON
-                data = self._parse_json_response(response_text)
+                full_result = self._parse_json_response(response_text)
                 
-                if data and isinstance(data, dict):
-                    # 直接回填到 Node 的 metadata 中
-                    node.metadata.update(data)
-                    self.logger.debug(f"节点 {node.id if hasattr(node, 'id') else ''} 处理成功")
-                else:
-                    self.logger.warning(f"节点处理返回空数据或格式错误")
+                if full_result:
+                    # 根据参数按需提取
+                    final_meta = {}
+                    if EnrichmentMethod.SUMMARY in requested_methods:
+                        final_meta["summary"] = full_result.get("summary", "")
+                    if EnrichmentMethod.KEYWORDS in requested_methods:
+                        final_meta["keywords"] = full_result.get("keywords", [])
+                    if EnrichmentMethod.TAGGING in requested_methods:
+                        final_meta["tags"] = full_result.get("tags", ["其他"])
                     
+                    node.metadata.update(final_meta)
             except Exception as e:
-                self.logger.error(f"单个节点处理失败: {e}", exc_info=False)
+                self.logger.error(f"节点处理异常: {e}")
 
-    def _parse_json_response(self, response_text: str) -> Optional[Dict[str, Any]]:
-        """
-        解析单条 JSON 响应，增加了对 Markdown 标记的过滤
-        """
-        clean_text = response_text.strip()
-        # 移除 Markdown 代码块包裹
-        if clean_text.startswith("```json"):
-            clean_text = clean_text.split("```json")[1].split("```")[0].strip()
-        elif clean_text.startswith("```"):
-            clean_text = clean_text.split("```")[1].split("```")[0].strip()
-
+    def _parse_json_response(self, text: str) -> Optional[Dict[str, Any]]:
         try:
-            return json.loads(clean_text)
-        except json.JSONDecodeError:
-            self.logger.error(f"JSON 解析失败。原始响应: {response_text}")
+            match = re.search(r'(\{.*\})', text.replace('\n', ' '), re.DOTALL)
+            return json.loads(match.group(1)) if match else json.loads(text)
+        except:
             return None
 
     def _build_single_prompt(self, content: str, strategies: List[BaseEnrichmentStrategy]) -> str:
