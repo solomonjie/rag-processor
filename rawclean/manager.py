@@ -133,4 +133,3 @@ class CleanManager:
             self.logger.info(f"文档处理成功: {task.file_path} -> {fragment_path}")
         except Exception as e:
             self.logger.error(f"处理文档 {task.file_path} 时发生异常: {str(e)}", exc_info=True)
-            raise
