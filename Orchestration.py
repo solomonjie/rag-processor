@@ -116,6 +116,7 @@ async def run_enrich_pipeline(work_id: str, redis_host: str, redis_port: int):
 
     storage_config = {
         "uri":os.getenv('Milvus_Server_URL'),
+        "token":os.getenv('Milvus_Server_TOKEN'),
         "collection_name":"tag_collection"
     }
     tag_manager = TagManager(storage_config)
@@ -145,6 +146,7 @@ async def run_ingestion_pipeline(work_id: str, redis_host: str, redis_port: int)
 
     storage_config = {
         "uri":os.getenv('Milvus_Server_URL'),
+        "token":os.getenv('Milvus_Server_TOKEN'),
         "enable_sparse":True,
         "enable_dense":True,
         "dim":512,
