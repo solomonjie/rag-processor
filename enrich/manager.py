@@ -77,7 +77,7 @@ class EnrichmentManager:
             self._finish_stage(task, payload)
             return
 
-        tag_list = self.tag_manager.get_all_tags() if EnrichmentMethod.TAGGING in methods else []
+        tag_list = self.tag_manager.get_all_tags()
 
         # 4. 调用 Master 进行批量/并发丰富化 (此处逻辑在 Master 中实现)
         # 注意：这里会修改 payload.content.nodes

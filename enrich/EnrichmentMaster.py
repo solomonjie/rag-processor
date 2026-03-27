@@ -167,7 +167,6 @@ class EnrichmentMaster:
         """
         供 Manager 调用的核心入口：将所有 Node 分发为独立的异步任务
         """
-        methods = payload.content.pipeline_instructions.enrichment_methods
         nodes = [n for n in payload.content.nodes if n.page_content.strip()]
         
         if not nodes:
@@ -178,12 +177,12 @@ class EnrichmentMaster:
         self.logger.info(f"执行丰富化，节点数: {len(nodes)}")
 
         tasks = [
-            self._enrich_single_node(node, labels_info_str, methods) 
+            self._enrich_single_node(node, labels_info_str) 
             for node in nodes
         ]
         await asyncio.gather(*tasks)
 
-    async def _enrich_single_node(self, node: Node, labels_info: str, requested_methods: List[str]):
+    async def _enrich_single_node(self, node: Node, labels_info: str):
         async with self.semaphore:
             try:
                 prompt = self.UNIFIED_PROMPT_TEMPLATE.format(
@@ -198,12 +197,10 @@ class EnrichmentMaster:
                 if full_result:
                     # 根据参数按需提取
                     final_meta = {}
-                    if EnrichmentMethod.SUMMARY in requested_methods:
-                        final_meta["summary"] = full_result.get("summary", "")
-                    if EnrichmentMethod.KEYWORDS in requested_methods:
-                        final_meta["keywords"] = full_result.get("keywords", [])
-                    if EnrichmentMethod.TAGGING in requested_methods:
-                        final_meta["tags"] = full_result.get("tags", ["其他"])
+                    final_meta["summary"] = full_result.get("summary", "")
+                    final_meta["keywords"] = full_result.get("keywords", [])
+                    final_meta["tags"] = full_result.get("tags", ["其他"])
+                    final_meta["facts"] = full_result.get("facts", ["其他"])
                     
                     node.metadata.update(final_meta)
             except Exception as e:
