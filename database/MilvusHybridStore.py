@@ -52,6 +52,7 @@ class MilvusHybridStore(HybridStoreInterface):
                 dim=config.get("dim", 512) if enable_dense else None,
                 enable_sparse=enable_sparse,
                 enable_dense=enable_dense,
+                embedding_field=config.get("embedding_field", "text"),
                 sparse_embedding_function=bm25_function,
                 overwrite=config.get("overwrite", False)
             )
