@@ -204,7 +204,16 @@ class EnrichmentMaster:
                         final_meta["keywords"] = full_result.get("keywords", [])
                     if EnrichmentMethod.TAGGING in requested_methods:
                         final_meta["tags"] = full_result.get("tags", ["其他"])
-                    
+
+                    # 提取 LLM 生成的元数据字段（publish_date/source/location/event_type）
+                    llm_metadata = full_result.get("metadata", {})
+                    if isinstance(llm_metadata, dict):
+                        final_meta["publish_date"] = llm_metadata.get("publish_date", "")
+                        final_meta["source"] = llm_metadata.get("source", "")
+                        final_meta["location"] = llm_metadata.get("location", "")
+                        final_meta["event_type"] = llm_metadata.get("event_type", "")
+
+                    # 合并到现有 metadata（保留原始时间字段如 insertDate 等）
                     node.metadata.update(final_meta)
             except Exception as e:
                 self.logger.error(f"节点处理异常: {e}")

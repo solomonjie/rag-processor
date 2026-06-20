@@ -13,7 +13,8 @@ class ExcelCleaner(BaseCleaner):
 
     def clean(self, raw_rows: Iterable) -> Generator:
         content_cols = ["title", "summary", "content"]
-        meta_cols = ["author", "keyWord", "contentMentionRegionList", "insertDate"]
+        meta_cols = ["author", "keyWord", "contentMentionRegionList",
+                     "publishTime", "collectTime", "insertTime", "insertDate"]
         
         nodes_data = []
         chunk_idx = 0    

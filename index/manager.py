@@ -93,8 +93,8 @@ class IngestionManager:
             metadata = block.get("metadata", {})
             
             node = TextNode(
-                id_=chunk_id,          
-                text=block["page_content"], 
+                id_=chunk_id,
+                text=block["page_content"],
                 metadata={
                     "file_name": task.file_path,
                     "internal_id": inner_id,
@@ -103,7 +103,16 @@ class IngestionManager:
                     "keywords": metadata.get("keywords", []),
                     "tags": metadata.get("tags", []),
                     "summary": metadata.get("summary", ""),
-                    "insert_date": metadata.get("insert_date", "")
+                    # 原始时间字段（来自 xlsx，驼峰命名）
+                    "publish_time": metadata.get("publishTime", ""),
+                    "collect_time": metadata.get("collectTime", ""),
+                    "insert_time": metadata.get("insertTime", ""),
+                    "insert_date": metadata.get("insertDate", ""),
+                    # LLM 提取的元数据（来自 EnrichmentMaster）
+                    "publish_date": metadata.get("publish_date", ""),
+                    "source": metadata.get("source", ""),
+                    "location": metadata.get("location", ""),
+                    "event_type": metadata.get("event_type", "")
                 }
             )
         
