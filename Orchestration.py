@@ -150,11 +150,13 @@ async def run_ingestion_pipeline(work_id: str, redis_host: str, redis_port: int)
         "enable_sparse":True,
         "enable_dense":True,
         "dim":512,
-        "collection_name":"product_knowledge_base"
+        "embedding_field":"embedding",
+        "collection_name":"product_knowledge_base1"
     }
     v_storage = MilvusHybridStore(storage_config, emb_model.embed_model)
     manager = IngestionManager(
         mq=mq,
+        embed_model=emb_model.embed_model,
         vector_store=v_storage, 
         registry=registry
     )

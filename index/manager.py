@@ -15,6 +15,7 @@ class IngestionManager:
     def __init__(
         self, 
         mq: MessageQueueInterface,
+        embed_model: Any,
         vector_store: Optional[BaseStore] = None, 
         registry: Optional[BaseStatusRegistry] = None,
         strict_consistency: bool = True
@@ -24,6 +25,7 @@ class IngestionManager:
         self.registry = registry
         self.strict_consistency = strict_consistency
         self.mq = mq
+        self.embed_model = embed_model
         
 
     def start_listening(self):
@@ -80,43 +82,61 @@ class IngestionManager:
             # 1. 过滤掉 page_content 为空的无效节点
             if not block.get("page_content"):
                 continue
+            try:
+                # 2. 获取稳定 ID：优先使用 internal_id，若无则使用 page_content 的哈希
+                inner_id = block.get("metadata").get("internal_id")
+                if not inner_id:
+                    inner_id = hashlib.md5(block["page_content"].encode()).hexdigest()
+                    
+                # 构造全局唯一的 chunk_id
+                chunk_id = f"{task.file_path}:{inner_id}"
                 
-            # 2. 获取稳定 ID：优先使用 internal_id，若无则使用 page_content 的哈希
-            inner_id = block.get("metadata").get("internal_id")
-            if not inner_id:
-                inner_id = hashlib.md5(block["page_content"].encode()).hexdigest()
+                # 3. 提取元数据（适配新 JSON 字段）
+                metadata = block.get("metadata", {})
+                embedding_content = metadata.get("summary", "") + " ".join(metadata.get("facts", []))
+                summary_embedding = self.embed_model.get_text_embedding(embedding_content)
+                node = TextNode(
+                    id_=chunk_id,          
+                    text=block["page_content"] + " ".join(metadata.get("keywords", [])), 
+                    embedding=summary_embedding,
+                    metadata={
+                        "file_name": task.file_path,
+                        "internal_id": inner_id,
+                        "tags": metadata.get("tags", []),
+                        "insert_date": metadata.get("insert_date", "")
+                    }
+                )
+            
+                # 3. 提取元数据（适配新 JSON 字段）
+                metadata = block.get("metadata", {})
                 
-            # 构造全局唯一的 chunk_id
-            chunk_id = f"{task.file_path}:{inner_id}"
+                node = TextNode(
+                    id_=chunk_id,
+                    text=block["page_content"],
+                    metadata={
+                        "file_name": task.file_path,
+                        "internal_id": inner_id,
+                        "author": metadata.get("author", ""),
+                        "title": metadata.get("title", ""), # 如果 metadata 里没有 title，可以从 text 第一行截取
+                        "keywords": metadata.get("keywords", []),
+                        "tags": metadata.get("tags", []),
+                        "summary": metadata.get("summary", ""),
+                        # 原始时间字段（来自 xlsx，驼峰命名）
+                        "publish_time": metadata.get("publishTime", ""),
+                        "collect_time": metadata.get("collectTime", ""),
+                        "insert_time": metadata.get("insertTime", ""),
+                        "insert_date": metadata.get("insertDate", ""),
+                        # LLM 提取的元数据（来自 EnrichmentMaster）
+                        "publish_date": metadata.get("publish_date", ""),
+                        "source": metadata.get("source", ""),
+                        "location": metadata.get("location", ""),
+                        "event_type": metadata.get("event_type", "")
+                    }
+                )
             
-            # 3. 提取元数据（适配新 JSON 字段）
-            metadata = block.get("metadata", {})
-            
-            node = TextNode(
-                id_=chunk_id,
-                text=block["page_content"],
-                metadata={
-                    "file_name": task.file_path,
-                    "internal_id": inner_id,
-                    "author": metadata.get("author", ""),
-                    "title": metadata.get("title", ""), # 如果 metadata 里没有 title，可以从 text 第一行截取
-                    "keywords": metadata.get("keywords", []),
-                    "tags": metadata.get("tags", []),
-                    "summary": metadata.get("summary", ""),
-                    # 原始时间字段（来自 xlsx，驼峰命名）
-                    "publish_time": metadata.get("publishTime", ""),
-                    "collect_time": metadata.get("collectTime", ""),
-                    "insert_time": metadata.get("insertTime", ""),
-                    "insert_date": metadata.get("insertDate", ""),
-                    # LLM 提取的元数据（来自 EnrichmentMaster）
-                    "publish_date": metadata.get("publish_date", ""),
-                    "source": metadata.get("source", ""),
-                    "location": metadata.get("location", ""),
-                    "event_type": metadata.get("event_type", "")
-                }
-            )
-        
-            nodes.append(node)
+                nodes.append(node)
+            except Exception as e:
+                self.logger.error(f"节点处理异常: {str(e)}")
         
         return nodes
 
