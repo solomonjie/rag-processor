@@ -80,6 +80,15 @@ clean 阶段完全本地无外部依赖；enrich 需 vllm+Milvus(去重查询)+t
 
 ## 使用
 
+虚拟环境（在 PowerShell 或 CMD 中运行）：
+
+| 操作 | 命令 | 说明 |
+|---|---|---|
+| 1. 创建虚拟环境 | `python -m venv rag_env` | 在当前目录下创建一个名为 rag_env 的虚拟环境文件夹 |
+| 2. 激活虚拟环境 | `rag_env\Scripts\activate` | Git Bash 用 `source rag_env/Scripts/activate` |
+| 3. 退出虚拟环境 | `deactivate` | 退出当前的虚拟环境，回到系统环境 |
+| 4. 删除虚拟环境 | `rmdir /s /q rag_env` | （可选：用于 CMD）递归删除虚拟环境文件夹 |
+
 ```bash
 pip install -r requirements.txt
 
