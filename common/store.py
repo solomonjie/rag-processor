@@ -41,6 +41,9 @@ class VectorStore:
             ),
             overwrite=False,
             upsert_mode=True,
+            # 适配层默认急切创建 AsyncMilvusClient，同步进程无事件循环会直接抛
+            # ConnectionConfigException；worker 全同步，用不到异步路径
+            use_async_client=False,
         )
         self.embed_model = get_embed_model()
         self.index = VectorStoreIndex.from_vector_store(
