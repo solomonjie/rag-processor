@@ -56,9 +56,16 @@ class Settings:
     minio_bucket = os.getenv("Minio_Bucket", "rag")
     minio_prefix = os.getenv("Minio_Prefix", "raw")
     minio_secure = os.getenv("Minio_Secure", "false").lower() in ("1", "true", "yes")
-    # 批次入库后是否删除远端前缀。建议生产保留原始数据（false + MinIO 生命周期策略），
-    # 以便将来换 embedding 模型 / 重建 collection 时离线重跑
+    # 批次入库后是否删除远端前缀。MinIO 定位是暂存：入 Milvus 即删，worker 无需固定盘
     minio_delete_on_done = os.getenv("Minio_Delete_On_Done", "true").lower() in ("1", "true", "yes")
+    # 死信远端前缀（不随批次清理；worker 无固定盘时这是死信的持久层）
+    minio_deadletter_prefix = os.getenv("Minio_Deadletter_Prefix", "deadletter")
+
+    # ---- Kafka 落盘器（kafka_ingest.py 独立进程；Kafka_Bootstrap 留空 = 不启用）----
+    kafka_bootstrap = os.getenv("Kafka_Bootstrap", "")
+    kafka_topic = os.getenv("Kafka_Topic", "")
+    kafka_group = os.getenv("Kafka_Group", "rag-ingest")
+    ingest_window_minutes = _int("Ingest_Window_Minutes", 5)  # 消息无 batch_id 时的时间窗口聚合
 
     # ---- 运行参数 ----
     batch_size = _int("Batch_Size", 64)

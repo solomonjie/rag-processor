@@ -1,12 +1,17 @@
 """跨阶段共用的小工具：目录扫描、_done 归档、jsonl 读写、死信落盘。"""
 import glob
 import json
+import logging
 import os
 import shutil
 import time
 
+from common.config import SETTINGS
+
 # 每个阶段目录下的归档子目录：文件被下一阶段消费后移入，目录本身保持"待处理队列"语义
 DONE = "_done"
+
+log = logging.getLogger("utils")
 
 
 def now_stamp() -> str:
@@ -71,10 +76,23 @@ def read_jsonl(path: str) -> tuple:
 
 
 def dead_letter(dead_dir: str, stage: str, src_name: str, entries: list) -> str:
-    """阶段死信落盘：data/dead_letter/{时间}_{阶段}_{来源文件}.jsonl，每行含 reason + 原始数据。"""
+    """阶段死信落盘：data/dead_letter/{时间}_{阶段}_{来源文件}.jsonl，每行含 reason + 原始数据。
+
+    配置了 MinIO 时同步上传到 deadletter/ 前缀（不随批次清理）——worker 无固定盘时
+    这是死信的持久层；上传失败只告警不阻断（本地副本仍在）。
+    """
     if not entries:
         return ""
     base = os.path.splitext(os.path.basename(src_name))[0]
     path = os.path.join(dead_dir, f"{now_stamp()}_{stage}_{base}.jsonl")
     write_jsonl(path, entries)
+    try:
+        from common import minio_source
+        if minio_source.enabled():
+            with open(path, "rb") as f:
+                data = f.read()
+            obj = f"{SETTINGS.minio_deadletter_prefix.strip('/')}/{os.path.basename(path)}"
+            minio_source.put_bytes(obj, data)
+    except Exception as e:
+        log.warning("死信上传 MinIO 失败（本地副本已保留）: %s", e)
     return path

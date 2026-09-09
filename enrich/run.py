@@ -6,6 +6,8 @@
 - region 从省级封闭词表中选（D9 规则①；爬取侧自带合法 region 时优先）。
 
 LLM 之前先做 URL 去重（Milvus 已入库的 node_id 直接跳过，省调用）。
+并发单位是"条"不是"文件"：同一批次所有待处理文件的记录凑进一个并发池
+（Kafka 路径一条消息一个文件，按文件开池会让 LLM_Concurrency 长期空转）。
 产出含全部判定记录（含被丢弃的，带 verdict 字段）供审计；LLM 失败的条目进死信。
 独立运行：python -m enrich.run --once
 """
@@ -211,8 +213,16 @@ def _existing_ids(node_ids: List[str]) -> set:
 
 # ---------------------------------------------------------------- sweep
 
+# 单个并发池的条数上限（内存护栏）：凑到即先判定+写回这一波，再继续收下一波
+POOL_MAX_RECORDS = 5000
+
+
 def sweep() -> int:
-    """处理所有进行中批次的 1_cleaned，返回处理文件数。"""
+    """处理所有进行中批次的 1_cleaned，返回处理文件数。
+
+    文件只是搬运单位：先把一个批次的所有待处理文件读入（跨文件全局去重），
+    凑成一个池一次并发判定，结果按文件写回。POOL_MAX_RECORDS 到量则分波。
+    """
     batches = iter_batches()
     if not batches:
         return 0
@@ -224,55 +234,74 @@ def sweep() -> int:
         return 0
 
     done = 0
+    seen = set()  # 本 sweep 已见 node_id（跨文件去重，重复只判第一条）
     for bdir in batches:
         batch = os.path.basename(bdir)
         in_dir = stage_dir(bdir, CLEANED)
         out_dir = stage_dir(bdir, ENRICHED)
         ensure_dirs(in_dir, out_dir, SETTINGS.dead_letter_dir)
+
+        files, pool = [], []  # [(文件名, 路径, 入池记录, stats)] / 池内全部记录
         for path in iter_input_files(in_dir, ["*.jsonl"]):
-            name = os.path.basename(path)
             rows, bad = read_jsonl(path)
             stats = Counter(records=len(rows), bad_lines=bad)
-
-            # URL 去重：已入库跳过 + 文件内重复只留第一条
-            existing = _existing_ids([r["node_id"] for r in rows if "node_id" in r])
-            seen, fresh = set(), []
+            keep = []
             for r in rows:
                 nid = r.get("node_id")
                 if not nid:
                     stats["bad_lines"] += 1
-                    continue
-                if nid in existing or nid in seen:
+                elif nid in seen:
                     stats["dedup_skipped"] += 1
-                    continue
-                seen.add(nid)
-                fresh.append(r)
+                else:
+                    seen.add(nid)
+                    keep.append(r)
+            files.append((os.path.basename(path), path, keep, stats))
+            pool.extend(keep)
+            if len(pool) >= POOL_MAX_RECORDS:
+                done += _run_wave(batch, out_dir, files, pool, tag_list)
+                files, pool = [], []
+        if files:
+            done += _run_wave(batch, out_dir, files, pool, tag_list)
+    return done
 
-            out_rows, deads = [], []
-            if fresh:
-                verdicts = enrich_batch(fresh, tag_list)
-                for it, v in zip(fresh, verdicts):
-                    if isinstance(v, EnrichError):
-                        deads.append({"stage": "enrich", "reason": str(v), "item": it})
-                        stats["dead_letter"] += 1
-                    else:
-                        # 爬取侧自带合法 region 时优先于 LLM 抽取（结构化字段更可靠）
-                        hint = it.get("region")
-                        if hint in REGIONS and hint != UNKNOWN_REGION:
-                            v.region = hint
-                        if not v.keep:
-                            stats[v.drop_reason] += 1
-                        out_rows.append({**it, "verdict": asdict(v)})
 
-            if out_rows:
-                stats["out"] = len(out_rows)
-                write_jsonl(os.path.join(out_dir, f"{now_stamp()}_{name}"), out_rows)
-            if deads:
-                p = dead_letter(SETTINGS.dead_letter_dir, "enrich", f"{batch}_{name}", deads)
-                log.warning("enrich 死信 %d 条 → %s", len(deads), p)
-            move_done(path)
-            done += 1
-            log.info("[enrich] %s/%s | %s", batch, name, _fmt(stats))
+def _run_wave(batch: str, out_dir: str, files: list, pool: list, tag_list) -> int:
+    """判定并写回一波文件：Milvus 查重 → 一个并发池 → 按文件产出。返回完成文件数。"""
+    existing = _existing_ids([r["node_id"] for r in pool])
+    fresh = [r for _, _, rows, _ in files for r in rows if r["node_id"] not in existing]
+    verdicts = enrich_batch(fresh, tag_list) if fresh else []
+    vi = 0  # verdicts 与 fresh 同序推进
+
+    done = 0
+    for name, path, rows, stats in files:
+        out_rows, deads = [], []
+        for it in rows:
+            if it["node_id"] in existing:
+                stats["dedup_skipped"] += 1
+                continue
+            v = verdicts[vi]
+            vi += 1
+            if isinstance(v, EnrichError):
+                deads.append({"stage": "enrich", "reason": str(v), "item": it})
+                stats["dead_letter"] += 1
+            else:
+                # 爬取侧自带合法 region 时优先于 LLM 抽取（结构化字段更可靠）
+                hint = it.get("region")
+                if hint in REGIONS and hint != UNKNOWN_REGION:
+                    v.region = hint
+                if not v.keep:
+                    stats[v.drop_reason] += 1
+                out_rows.append({**it, "verdict": asdict(v)})
+
+        if out_rows:
+            stats["out"] = len(out_rows)
+            write_jsonl(os.path.join(out_dir, f"{now_stamp()}_{name}"), out_rows)
+        if deads:
+            p = dead_letter(SETTINGS.dead_letter_dir, "enrich", f"{batch}_{name}", deads)
+            log.warning("enrich 死信 %d 条 → %s", len(deads), p)
+        move_done(path)
+        done += 1
+        log.info("[enrich] %s/%s | %s", batch, name, _fmt(stats))
     return done
 
 
