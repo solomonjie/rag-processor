@@ -4,14 +4,14 @@
 
 架构依据见 `data/架构决策记录-2026-08-26.md`，字段/格式硬约束见 `data/知识库构建规范-消费端数据契约.md`（均在 data/ 目录，不受版本控制，改动前先读）。
 
-## 架构（单 worker 三阶段，批次文件夹制，LLM 只出现一次）
+## 架构（落盘器 + 单 worker 三阶段，MinIO 暂存，LLM 只出现一次）
 
-沿用原流水线的阶段词汇 clean/enrich/index（chunk 已按决策 D2 砍掉）：
+沿用原流水线的阶段词汇 clean/enrich/index（chunk 已按决策 D2 砍掉）。到达与处理**分离部署**：
 
 ```
-MinIO raw/<batch>/（可选）──┐   一个批次 = 一个文件夹，三阶段依次消费
-data/inbox/<batch>/（本地）─┤
-                           ▼
+爬虫 ──推──> Kafka ──[kafka_ingest.py 落盘器，独立进程]──> MinIO rag/raw/<batch>/**  ┐
+                                                        data/inbox/<batch>/（本地）─┤
+                                                                                    ▼
 data/running/<batch>/inbox ──[clean]→ 1_cleaned ──[enrich]→ 2_enriched ──[index]→ Milvus
                            │                一次 LLM 调用               组装+embedding
                            │                判定+打标+region             upsert
@@ -19,19 +19,20 @@ data/running/<batch>/inbox ──[clean]→ 1_cleaned ──[enrich]→ 2_enrich
         批次三目录全部消费完 → 删除 MinIO 批次前缀 → 删除 running/<batch>/ 整个目录
 ```
 
+**持久性归属（worker 无需固定盘）**：Kafka 管 offset（落盘器上传 MinIO 成功才提交，只提交连续已上传前沿）；MinIO 是暂存（批次入 Milvus 后即删）；Milvus 是最终库。worker 的 `running/` 目录只是计算现场——容器挂掉最多重跑当前批次（最坏损失一次 LLM 调用费），数据不丢。**死信会同步上传 MinIO `deadletter/` 前缀**（不随批次清理），无固定盘部署也不丢失败记录。
+
 **状态机：文件位置即状态，无额外成功标记**——文件在阶段目录=待处理；移入 `_done/`=该阶段成功；enrich/index 失败文件原地保留（下轮重试，upsert 幂等所以重跑无害）；三目录全空=批次完成，整批清理。**清理顺序先远端（MinIO）后本地**：远端删失败则本地保留，下轮重试，绝不会出现"本地已删、远端残留→整批重跑白花 LLM 钱"。
 
-- clean 抽正文（trafilatura）+ 归一化；enrich 一次 LLM 调用（判定+打标+region 抽取，约束解码）；index 组装节点入库；
+- clean 抽正文（trafilatura）+ 归一化；enrich 每条新闻一次 LLM 调用（判定+打标+region 抽取，约束解码），**同批次所有文件的记录凑进一个并发池**（`LLM_Concurrency` 限并发——Kafka 路径一条消息一个文件，按文件开池会打不满吞吐）；index 组装节点入库；
 - URL 去重在 enrich 之前（Milvus 查 md5(url)，已入库直接跳过，省 LLM）；
 - 广告/非新闻/不相关/抽不出正文 → 丢弃计数（设计行为）；LLM 失败/无发布时间/文件损坏 → `data/dead_letter/`（带批次与阶段标记，**不随批次清理删除**，修复后可重放）。
 
 ## 批次投递
 
-两种等价方式，可同时用：
-
 | 方式 | 约定 | 说明 |
 |---|---|---|
-| MinIO（生产推荐） | `{Minio_Bucket}/{Minio_Prefix}/<batch_id>/**` | 爬取侧上传，如 `rag/raw/20260826_0900/*.json`；worker 自动拉取新批次 |
+| Kafka → 落盘器（生产主路径） | 爬虫推消息到 topic，`kafka_ingest.py` 消费并上传 | 消息带 `batch_id` 字段→直传（假定批次封闭）；无→按时间窗口聚批（默认 5 分钟）。上传成功才 commit offset，重放覆盖写幂等 |
+| MinIO 直传 | `{Minio_Bucket}/{Minio_Prefix}/<batch_id>/**` | 爬取侧直接上传，如 `rag/raw/20260826_0900/*.json`；worker 自动拉取新批次 |
 | 本地目录 | `data/inbox/<batch_id>/**`（子目录）或 `data/inbox/<文件>`（散文件，文件名=batch_id） | 测试/手工导入 |
 
 batch_id 建议用时间戳类命名（`20260826_0900`）；非法字符自动替换为 `_`。
@@ -73,8 +74,9 @@ published_date 归一化为定长 `YYYY-MM-DDTHH:MM:SS`（契约 §6.1，东八�
 |---|---|---|
 | Milvus ≥2.5 | 内容库 + tag_collection | 服务端 BM25(jieba+cnalphanumonly)，HNSW/IP，TTL 180 天 |
 | TEI | Qwen3-Embedding-0.6B (1024维) | **必须与消费端同一模型**，换模型=跨端协调 |
-| vllm | Qwen3.6-35B-A3B 判定+打标 | guided_json 约束解码（不支持时自动降级白名单校验） |
-| MinIO（可选） | 批次源 | 不配置则纯本地目录模式 |
+| LLM（OpenAI 兼容） | 判定+打标 | vllm 私有部署（guided_json 约束解码）或商用 API（自动降级白名单校验） |
+| MinIO（可选） | 批次暂存 | 落盘器写入，入库后即删；不配置则纯本地目录模式 |
+| Kafka（可选） | 消息到达 | 配合 kafka_ingest.py 落盘器使用 |
 
 clean 阶段完全本地无外部依赖；enrich 需 vllm+Milvus(去重查询)+tag_collection；index 需 Milvus+TEI。
 
@@ -96,10 +98,22 @@ python create_collection.py        # 建表/校验（--drop 删除重建）
 python worker.py                   # 常驻：收编批次 → 三阶段 → 清理
 python worker.py --once            # 排空当前批次后退出（cron 用）
 
+python kafka_ingest.py             # 落盘器：Kafka → MinIO（独立进程，与 worker 分开部署）
+python kafka_ingest.py --test-write  # 不连 Kafka，写样例批次到 MinIO（联调用）
+
 # 独立运行某个阶段（回放/补跑）
 python -m clean.run --once         # 只跑抽取（会先收编 inbox/MinIO 新批次）
 python -m enrich.run --once        # 只跑判定打标
 python -m index.run --once         # 只跑入库 + 完成批次清理
+```
+
+容器部署（两个容器，worker 无需固定盘）：
+
+```bash
+docker build -t rag-worker .
+docker run -d --name rag-ingest --env-file .dockerenv rag-worker python kafka_ingest.py
+docker run -d --name rag-worker --env-file .dockerenv rag-worker python worker.py
+# running/ 只是计算现场，容器随时可杀可重建；需要减少重跑损失才挂卷
 ```
 
 回放：把批次文件夹放回 `running/`（或把文件放回对应阶段目录）再跑该阶段即可，upsert 幂等。
@@ -112,18 +126,19 @@ clean/              阶段1：抽取与归一化
   extractor.py      record → NewsItem（trafilatura / 纯文本直通 / 时间归一化）
   run.py            入口：收编批次 + sweep + CLI
 enrich/             阶段2：LLM 判定 + 打标 + 结构化字段抽取
-  run.py            prompt/guided_json/白名单 + URL 去重 + sweep + CLI
+  run.py            prompt/guided_json/白名单 + 跨文件并发池 + URL 去重 + sweep + CLI
 index/              阶段3：组装与入库
   run.py            TextNode 组装（契约 text 格式）+ upsert + 完成批次清理 + CLI
 common/             跨阶段共享
   batch.py          批次管理：收编 / 枚举 / 完成检查 / 整批清理
-  minio_source.py   MinIO 批次源（拉取 + 完成后删前缀，可关闭）
+  minio_source.py   MinIO 批次源（拉取 + 字节上传 + bucket 确保 + 完成后删前缀）
   config.py         环境变量集中读取
   schema.py         Milvus 显式 schema（15 列）+ BM25 + TTL
   store.py          llama-index upsert 路径 + 查重
   tags.py           tag_collection 只读缓存
   embed.py          TEI 封装
-  utils.py          目录扫描/_done 归档/jsonl/死信
+  utils.py          目录扫描/_done 归档/jsonl/死信（含 MinIO 外置）
+kafka_ingest.py     Kafka→MinIO 落盘器（独立进程，batch_id 直通/时间窗口聚批/连续前沿提交）
 worker.py           总入口：顺序驱动三阶段
 create_collection.py 建表/校验 CLI（--drop 重建）
 ```
@@ -141,7 +156,7 @@ create_collection.py 建表/校验 CLI（--drop 重建）
 | `Monitored_Entities` | 空 | 监测主体（逗号分隔）；空=不做相关性过滤 |
 | `LLM_Concurrency` | 16 | 并发判定数，按 GPU 吞吐调 |
 | `Milvus_TTL_Days` | 180 | 数据保留期 |
-| `Minio_Endpoint` | 空 | 留空=纯本地模式；填 host:port 启用 MinIO 批次源 |
-| `Minio_Delete_On_Done` | true | 批次完成是否删远端前缀；**建议 false + MinIO 生命周期策略保留原始数据**，将来换 embedding/重建 collection 可离线重跑 |
-
-容器运行：`docker run --env-file .dockerenv -v $(pwd)/data:/app/data <image>`。
+| `Minio_Endpoint` | 空 | 留空=纯本地模式；填 host:port 启用 MinIO 暂存 |
+| `Minio_Delete_On_Done` | true | 批次入 Milvus 后删远端前缀（MinIO 是暂存，设计即删） |
+| `Kafka_Bootstrap` / `Kafka_Topic` | 空 | 落盘器用；留空则 kafka_ingest.py 拒绝启动 |
+| `Ingest_Window_Minutes` | 5 | 消息无 batch_id 时的时间窗口聚批粒度 |

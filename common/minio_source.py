@@ -37,6 +37,27 @@ def _get_client():
     return _client
 
 
+def ensure_bucket() -> bool:
+    """确保 bucket 存在（落盘器启动时调用）。失败返回 False。"""
+    try:
+        client = _get_client()
+        if not client.bucket_exists(SETTINGS.minio_bucket):
+            client.make_bucket(SETTINGS.minio_bucket)
+            log.info("创建 bucket %s", SETTINGS.minio_bucket)
+        return True
+    except Exception as e:
+        log.error("MinIO bucket 检查失败: %s", e)
+        return False
+
+
+def put_bytes(object_name: str, data: bytes) -> None:
+    """上传字节到 bucket（同名覆盖，幂等）。失败抛异常由调用方处理。"""
+    import io
+    client = _get_client()
+    client.put_object(SETTINGS.minio_bucket, object_name, io.BytesIO(data),
+                      length=len(data), content_type="application/json")
+
+
 def fetch_batches() -> int:
     """列出远端批次前缀，本地 running/ 尚无同名批次的下载之。返回新拉取批次数。"""
     if not enabled():
