@@ -1,21 +1,22 @@
-# 排除 Python 字节码缓存
+# 密钥绝不进镜像（曾因缺这两行导致 .env 被 COPY . . 打进镜像）
+.env
+.dockerenv
+
+# 数据与虚拟环境（体积大/本地态）
+data/
+rag_env/
+.venv/
+venv/
+env/
+
+# Python 字节码缓存
 **/__pycache__/
 *.py[cod]
 *$py.class
 
-# 排除虚拟环境
-.venv/
-venv/
-env/
-.env
-.dockerenv
-
-# 排除版本控制和本地日志
+# 版本控制 / IDE 配置 / 本地日志
 .git/
 .gitignore
 *.log
-data/
-
-# 排除 IDE 配置
 .vscode/
 .idea/

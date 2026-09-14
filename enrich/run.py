@@ -6,6 +6,8 @@
 - region 从省级封闭词表中选（D9 规则①；爬取侧自带合法 region 时优先）。
 
 LLM 之前先做 URL 去重（Milvus 已入库的 node_id 直接跳过，省调用）。
+超长正文（存储 text 超 Milvus 预算）在判定通过后追加一次摘要调用替换 content
+（契约 §4.1 摘录优先），失败退回 index 阶段的字节截断兜底。
 并发单位是"条"不是"文件"：同一批次所有待处理文件的记录凑进一个并发池
 （Kafka 路径一条消息一个文件，按文件开池会让 LLM_Concurrency 长期空转）。
 产出含全部判定记录（含被丢弃的，带 verdict 字段）供审计；LLM 失败的条目进死信。
@@ -29,6 +31,7 @@ from common.config import SETTINGS
 from common.tags import get_tagstore
 from common.utils import (dead_letter, ensure_dirs, iter_input_files, move_done,
                           now_stamp, read_jsonl, write_jsonl)
+from index.run import TEXT_BUDGET, storage_text
 
 log = logging.getLogger("enrich.run")
 
@@ -74,6 +77,12 @@ def match_region(hint) -> str | None:
 SYSTEM_PROMPT = (
     "你是新闻审核与标注助手。只输出 JSON，不输出任何解释文字。"
     "判断基于正文证据，广告/软文判定宁可保守：拿不准时 is_ad 输出 true。"
+)
+
+SUMMARY_PROMPT = (
+    "你是新闻摘要助手。把给定新闻压缩成 1000 字以内的摘要：保留关键事实"
+    "（时间、地点、人物、事件经过、数据、各方表态），第三人称客观叙述，"
+    "直接输出摘要正文，不要任何前后缀、标题或解释文字。"
 )
 
 
@@ -160,6 +169,39 @@ _use_guided = True
 _use_json_mode = True
 
 
+async def _summarize_overlong(client: AsyncOpenAI, item: dict) -> None:
+    """存储 text 超预算 → LLM 摘要替换 content（契约 §4.1：超长正文应摘录而非半句截断）。
+
+    只在 _enrich_one 的并发槽内调用（借用调用方的信号量槽，不重复获取——
+    同一协程二次获取在并发全满时会自锁）。失败/空输出保留原文，
+    由 index 的 _trunc 字节截断兜底（截尾不丢行）。
+    """
+    try:
+        if len(storage_text(item["title"], item["content"]).encode("utf-8")) <= TEXT_BUDGET:
+            return
+        raw_bytes = len(item["content"].encode("utf-8"))
+        resp = await client.chat.completions.create(
+            model=SETTINGS.llm_model,
+            messages=[
+                {"role": "system", "content": SUMMARY_PROMPT},
+                {"role": "user", "content": item["content"]},
+            ],
+            temperature=0,
+            max_tokens=SETTINGS.llm_max_tokens,
+            timeout=SETTINGS.llm_timeout,
+        )
+        s = (resp.choices[0].message.content or "").strip()
+        if not s:  # 推理模型思维链烧光 token 时 content 为空
+            log.warning("摘要输出为空，退回字节截断兜底: url=%s", item["url"])
+            return
+        item["content"] = s
+        item["summarized"] = True
+        log.info("超长正文摘要: url=%s %d字节 → %d字节",
+                 item["url"], raw_bytes, len(s.encode("utf-8")))
+    except Exception as e:
+        log.warning("超长正文摘要失败，退回字节截断兜底: url=%s: %s", item["url"], e)
+
+
 async def _enrich_one(client: AsyncOpenAI, sem: asyncio.Semaphore,
                      item: dict, tags) -> Verdict:
     global _use_guided, _use_json_mode
@@ -186,7 +228,10 @@ async def _enrich_one(client: AsyncOpenAI, sem: asyncio.Semaphore,
             try:
                 resp = await client.chat.completions.create(**kwargs)
                 data = json.loads(resp.choices[0].message.content)
-                return _to_verdict(data, allowed)
+                v = _to_verdict(data, allowed)
+                if v.keep:  # 只有要入库的才花摘要调用（被判丢弃的不存储）
+                    await _summarize_overlong(client, item)
+                return v
             except EnrichError:
                 raise  # 输出结构问题重试也没用，直接死信
             except Exception as e:

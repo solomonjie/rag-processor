@@ -31,7 +31,7 @@ from common.store import get_store
 from common.tags import get_tagstore
 from common.utils import dead_letter, ensure_dirs, now_stamp
 from enrich.run import apply_verdict, dedup_enrich
-from index.run import build_node
+from index.run import build_node, upsert_isolated
 
 log = logging.getLogger("stream")
 
@@ -137,20 +137,26 @@ def _process_wave(items: list) -> list:
                 stats[v.drop_reason] += 1
             rows.append((it, v))
 
-    nodes = [build_node(apply_verdict(it, v)) for it, v in rows if v.keep]
+    kept = [(it, v) for it, v in rows if v.keep]
+    nodes = [build_node(apply_verdict(it, v)) for it, v in kept]
     try:
-        stats["inserted"] = store.upsert(nodes)
+        inserted, bad_nodes = upsert_isolated(store, nodes)
+        stats["inserted"] = inserted
     except Exception as e:
         log.error("index 入库失败，本波 %d 条转重投: %s", len(items), e)
         return [False] * len(items)
+    for n in bad_nodes:
+        # 数据级坏行（字段超长等，重投无解）：终态死信，不拖累整波
+        it, _ = kept[nodes.index(n)]
+        deads.append({"stage": "index", "reason": "upsert_rejected", "item": it})
 
     ok = [True] * len(items)
     if deads:
         stats["dead_letter"] = len(deads)
         try:
-            p = dead_letter(SETTINGS.dead_letter_dir, "enrich",
+            p = dead_letter(SETTINGS.dead_letter_dir, "wave",
                             f"stream_{now_stamp()}", deads)
-            log.warning("enrich 死信 %d 条 → %s", len(deads), p)
+            log.warning("波内死信 %d 条 → %s", len(deads), p)
         except Exception as e:
             # 死信落盘失败：相关条目转重投（其余条目已入库/已处理）
             log.error("死信落盘失败（相关条目转重投）: %s", e)

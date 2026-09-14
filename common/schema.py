@@ -43,7 +43,7 @@ def _build_schema():
     schema.add_field("doc_id", DataType.VARCHAR, max_length=65535)
     schema.add_field("ref_doc_id", DataType.VARCHAR, max_length=65535)
     # ---- 节点元数据列（消费端过滤键 + url 去重键 + region 预留列）----
-    schema.add_field("title", DataType.VARCHAR, max_length=512)
+    schema.add_field("title", DataType.VARCHAR, max_length=2048)  # 按字节计：512≈170汉字偏紧，真实样例出过541字节标题
     schema.add_field("url", DataType.VARCHAR, max_length=2048)
     schema.add_field("source", DataType.VARCHAR, max_length=255)
     schema.add_field("published_date", DataType.VARCHAR, max_length=64)
