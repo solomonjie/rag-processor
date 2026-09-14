@@ -38,6 +38,7 @@ from enrich.run import REGIONS  # 省级标准名词表（region 非空时校验
 COLL = "product_knowledge_base"  # 事故规约：测试脚本 collection 一律硬编码
 PREFIX = "http://example.com/e2e-"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+HTML_RE = re.compile(r"</?(?:div|p|br|span|img|section|article)\b", re.I)
 BASE = os.path.dirname(os.path.abspath(__file__))  # 相对脚本定位，不依赖 cwd
 LAST_RUN = os.path.join(BASE, "data", "_e2e_last.json")
 STABLE_POLLS = 9   # 连续 N 次轮询行数不变 = settle（窗口要长于一波 LLM 处理时间）
@@ -87,7 +88,7 @@ def send(namesrv: str, msgs: list) -> None:
 def query_urls(client, urls: list) -> list:
     expr = "url in [" + ",".join(json.dumps(u) for u in urls) + "]"
     return client.query(COLL, filter=expr,
-                        output_fields=["id", "url", "region", "published_date", "tags"],
+                        output_fields=["id", "url", "region", "published_date", "tags", "text"],
                         limit=len(urls))
 
 
@@ -174,6 +175,8 @@ def main() -> None:
             errs.append(f"date={r['published_date']!r}")
         if not r["tags"]:
             errs.append("tags空")
+        if HTML_RE.search(r["text"] or ""):
+            errs.append("text含HTML标签")
         if (r["region"] or "").strip() and r["region"] not in REGIONS:
             errs.append(f"region={r['region']!r} 非省级标准名")
         # region 允许为空（契约 §C：region 当前无人读取，仅未来预留；空=判不出）

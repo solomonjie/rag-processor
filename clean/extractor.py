@@ -1,8 +1,9 @@
 """record → clean 阶段产物（NewsItem dict）。
 
-两条路径：
-- 有 html → trafilatura 抽正文（D7：LLM 永远不碰原始 HTML）；
-- 只有 content（Excel/手工导入等）→ 视为已抽好的纯文本，直通。
+- 有 html，或 content 里检出 HTML 块级标签（上游 content 实测多为网页 HTML，
+  xlsx 62 行样例里 37/38 行是 div 套 div 的正文）→ trafilatura 抽正文
+  （D7：LLM 永远不碰原始 HTML）；trafilatura 认不出结构的弱片段剥标签兜底；
+- content 是纯文本 → 直通。
 
 published_date 全部代码归一化（P0-1），LLM 不参与时间解析。
 """
@@ -11,6 +12,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from html import unescape
 from urllib.parse import urlsplit
 
 import trafilatura
@@ -44,6 +46,17 @@ _DT_FORMATS = (
 _DAY_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y年%m月%d日")
 
 _TITLE_NOISE = re.compile(r"\s*[@＠]\S+\s*$")  # 标题尾部 "@作者" 噪声
+
+# content 字段检出块级标签即视为 HTML（纯文本新闻正文不会出现这些）
+_HTML_TAG_RE = re.compile(r"</?(?:div|p|br|span|img|section|article|h[1-6]|ul|ol|li)\b", re.I)
+
+
+def _strip_tags(s: str) -> str:
+    """trafilatura 认不出结构的弱 HTML 片段（如裸 <p>）兜底：剥标签保段落换行。"""
+    s = re.sub(r"(?is)<(script|style).*?</\1>", "", s)
+    s = re.sub(r"(?i)</?(?:div|p|br|li|h[1-6]|ul|ol|tr)[^>]*>", "\n", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    return "\n".join(ln.strip() for ln in unescape(s).splitlines() if ln.strip())
 
 
 def _epoch_to_iso(v: float) -> str | None:
@@ -120,22 +133,28 @@ def extract_record(rec: dict) -> dict:
     raw_content = str(rec.get("content") or "").strip()
 
     # ---- 正文 ----
-    if html:
+    content_html = raw_content if _HTML_TAG_RE.search(raw_content) else ""
+    if html or content_html:
         raw = trafilatura.extract(
-            html,
+            html or content_html,
             output_format="json",
             with_metadata=True,      # 否则 JSON 里只有 text，没有 title/date
             include_comments=False,
         )
-        if not raw:
+        if raw:
+            try:
+                meta = json.loads(raw)
+            except json.JSONDecodeError:
+                raise ExtractError("extract_output_invalid")
+            content = (meta.get("text") or "").strip()
+            page_title = (meta.get("title") or "").strip()
+            page_date = meta.get("date")
+        elif content_html and not html:
+            # 结构太弱 trafilatura 认不出（如裸 <p> 片段）：剥标签兜底，不丢内容
+            content = _strip_tags(content_html)
+            page_title, page_date = "", None
+        else:
             raise ExtractError("extract_failed")
-        try:
-            meta = json.loads(raw)
-        except json.JSONDecodeError:
-            raise ExtractError("extract_output_invalid")
-        content = (meta.get("text") or "").strip()
-        page_title = (meta.get("title") or "").strip()
-        page_date = meta.get("date")
     elif raw_content:
         content = raw_content
         page_title = ""
