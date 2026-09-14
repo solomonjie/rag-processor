@@ -2,8 +2,7 @@
 trafilatura>=2.0
 pandas==2.3.3          # xlsx 输入读取
 openpyxl==3.1.5        # pandas 的 xlsx 引擎
-minio==7.2.20          # 批次源对象存储（可选，配置 Minio_Endpoint 后启用）
-kafka-python-ng==2.2.3 # 落盘器 Kafka 客户端（可选，仅 kafka_ingest.py 使用）
+rocketmq-client-python==2.0.0  # RocketMQ 4.x 客户端（C++ binding 仅 Linux；流模式容器内运行）
 llama-index-core==0.14.15
 llama-index-embeddings-text-embeddings-inference==0.4.2
 llama-index-vector-stores-milvus==1.0.0

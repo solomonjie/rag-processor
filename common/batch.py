@@ -1,4 +1,4 @@
-"""批次管理：目录即队列的"批次文件夹"版。
+"""批次管理：目录即队列的"批次文件夹"版（文件模式的到达与状态）。
 
 一个批次 = data/running/<batch_id>/ 下的三个阶段目录：
     inbox/  → 1_cleaned/ → 2_enriched/ → (index 入 Milvus)
@@ -9,19 +9,17 @@
     dead_letter/     = 终态，需人工介入（不随批次清理删除）
     批次目录被删除   = 三阶段全部消费完毕（enrich/index 失败的文件原地保留，批次不完成）
 
-批次来源（adopt_arrivals 统一收编到 running/）：
-    - 本地 data/inbox/ 下的子目录（目录名=batch_id）或散文件（文件名去扩展名=batch_id）
-    - MinIO raw/<batch_id>/ 前缀（配置了 Minio_Endpoint 时，见 minio_source）
+批次来源（adopt_arrivals 收编到 running/）：本地 data/inbox/ 下的子目录
+（目录名=batch_id）或散文件（文件名去扩展名=batch_id）。
+生产数据到达走流模式（common/stream.py，RocketMQ 直连），不经本模块。
 """
 import logging
 import os
-import re
 import shutil
 
 from clean.loader import INPUT_PATTERNS
-from common import minio_source
 from common.config import SETTINGS
-from common.utils import ensure_dirs, iter_input_files, move_unique
+from common.utils import ensure_dirs, iter_input_files, move_unique, safe_batch_id
 
 log = logging.getLogger("batch")
 
@@ -33,18 +31,14 @@ ENRICHED = "2_enriched"
 _STAGE_SLOTS = ((INBOX, INPUT_PATTERNS), (CLEANED, ["*.jsonl"]), (ENRICHED, ["*.jsonl"]))
 
 
-def safe_batch_id(name: str) -> str:
-    return re.sub(r"[^\w.-]", "_", name)[:120] or "batch"
-
-
 def stage_dir(batch_dir: str, stage: str) -> str:
     return os.path.join(batch_dir, stage)
 
 
 def adopt_arrivals() -> int:
-    """收编新批次：本地 inbox + MinIO 远端 → running/<batch>/inbox/。返回收编批次数。"""
+    """收编新批次：本地 inbox → running/<batch>/inbox/。返回收编批次数。"""
     ensure_dirs(SETTINGS.inbox_dir, SETTINGS.running_dir)
-    n = minio_source.fetch_batches()  # MinIO 拉到 running/<batch>/inbox/
+    n = 0
     for entry in sorted(os.listdir(SETTINGS.inbox_dir)):
         src = os.path.join(SETTINGS.inbox_dir, entry)
         batch = safe_batch_id(entry if os.path.isdir(src) else os.path.splitext(entry)[0])
@@ -81,19 +75,12 @@ def batch_complete(batch_dir: str) -> bool:
 
 
 def finish_batches() -> int:
-    """清理完成批次：先删 MinIO 前缀、成功后再删本地目录（崩溃安全：
-    远端删失败则本地保留 → 下轮重试删除，不会造成远端残留批次被重新拉取重跑）。
-    死信不随批次删除。返回清理批次数。"""
+    """清理完成批次：删除整个 running/<batch>/ 目录。死信不随批次删除。返回清理批次数。"""
     cleaned = 0
     for bdir in iter_batches():
         if not batch_complete(bdir):
             continue
-        batch = os.path.basename(bdir)
-        if not minio_source.delete_batch(batch):
-            log.error("批次 %s 远端删除失败，本地目录保留待重试", batch)
-            continue
         shutil.rmtree(bdir, ignore_errors=True)
         cleaned += 1
-        log.info("批次 %s 完成并清理（本地目录已删，%s）", batch,
-                 "远端前缀已删" if minio_source.delete_enabled() else "纯本地模式")
+        log.info("批次 %s 完成并清理", os.path.basename(bdir))
     return cleaned

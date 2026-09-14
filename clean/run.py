@@ -1,6 +1,6 @@
 """阶段1（clean）入口：running/<batch>/inbox/* → running/<batch>/1_cleaned/*.jsonl。
 
-sweep 开始时先收编新批次（本地 data/inbox/ 子目录或散文件；配置了 MinIO 时也拉取远端批次）。
+sweep 开始时先收编新批次（本地 data/inbox/ 子目录或散文件）。
 文件消费成功移入 inbox/_done/；丢弃项只计数；死信落全局 data/dead_letter/。
 本阶段完全本地（trafilatura，无外部服务依赖），可随时安全重跑。
 独立运行：python -m clean.run --once
