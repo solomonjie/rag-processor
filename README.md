@@ -37,7 +37,7 @@
 ## 处理核心（两条路径共用）
 
 - **clean**：`canon_row` 别名映射（协议字段 infoRegion/publishTime/webName 等在这一步对齐）→ `extract_record`：trafilatura 抽正文（有 html 时）、published_date 全代码归一化为东八区定长 ISO（支持协议的 Long 秒时间戳）、`node_id = md5(url)`；全链无时间 → 死信
-- **enrich**：每条新闻一次 LLM 调用（判定 is_ad/is_news/relevant + tags ≤3 + region 省级封闭词表），`LLM_Concurrency` 限并发；URL 去重在 LLM 之前（Milvus 查已入库 node_id 直接跳过，省调用费）；response_format=json_object（vllm 下 guided_json，不支持自动降级）；超长正文（存储 text 超 6 万字节预算）判定通过后追加一次摘要调用替换 content（契约 §4.1 摘录优先），失败退回 index 字节截断兜底
+- **enrich**：每条新闻一次 LLM 调用（判定 is_ad/is_news/relevant + tags ≤3 + region 省级封闭词表），`LLM_Concurrency` 限并发；URL 去重在 LLM 之前（Milvus 查已入库 node_id 直接跳过，省调用费）；response_format=json_object（vllm 下 guided_json，不支持自动降级）
 - **region 决策顺序**：上游 infoRegion 能归一化成省级标准名（"陕西省 西安市"→陕西省、"北京"→北京市；"中国"忽略、"未知"交 LLM）时优先于 LLM 抽取
 - **index**：只入库 verdict.keep 的记录；text 严格按契约 §4.1；llama-index upsert 路径（幂等，同 node_id 覆盖）；BM25 + HNSW，TTL 180 天
 

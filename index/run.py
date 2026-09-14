@@ -43,7 +43,7 @@ def build_node(row: dict) -> TextNode:
     v = row["verdict"]
     return TextNode(
         id_=row["node_id"],
-        # 字节截断是最后防线：正常长度与超长（enrich 已摘要）都不应触达
+        # 超长正文直接按字节截尾（Milvus 单行 64KB 物理上限；消费端只用头部，丢的尾巴用不到）
         text=_trunc(storage_text(row["title"], row["content"]), TEXT_BUDGET),
         metadata={
             "url": _trunc(row["url"], 2000),
