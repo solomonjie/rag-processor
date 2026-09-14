@@ -39,7 +39,10 @@ _ALIASES = {
     "source": ("source", "来源", "来源网站", "站点", "网站", "webname", "sitename"),
     "collect_time": ("collect_time", "collecttime", "crawl_time", "inserttime",
                      "采集时间", "抓取时间", "爬取时间"),
-    "region": ("region", "地区", "发生地"),
+    "region": ("region", "地区", "发生地", "inforegion", "authorregion"),
+    # infoRegion/authorRegion：舆情系统推送协议的地域字段（前者为内容识别地域，
+    # 更接近"新闻发生地"，故排前；值形如"陕西省 西安市"/"北京"，省级归一化在
+    # enrich 阶段做——clean 不认识省级词表）
 }
 
 SUPPORTED_EXT = ("json", "jsonl", "xlsx", "txt", "html", "htm")
@@ -62,8 +65,11 @@ def _mtime(path: str) -> datetime:
     return datetime.fromtimestamp(os.path.getmtime(path))
 
 
-def _canon_row(row: dict) -> dict:
-    """一行原始数据 → 规范字段 dict；每个规范字段按别名优先级取第一个非空值。"""
+def canon_row(row: dict) -> dict:
+    """一行原始数据 → 规范字段 dict；每个规范字段按别名优先级取第一个非空值。
+
+    公开给流路径（common/stream.py）直接复用：RocketMQ 消息体即一行原始数据。
+    """
     lowered = {str(k).strip().lower(): v for k, v in row.items()}
     out = {}
     for canon, aliases in _ALIASES.items():
@@ -94,12 +100,12 @@ def _load_json(path: str) -> tuple:
         records, bad = [], 0
         for r in data:
             if isinstance(r, dict):
-                records.append(_canon_row(r))
+                records.append(canon_row(r))
             else:
                 bad += 1
         return records, bad
     if isinstance(data, dict):
-        return [_canon_row(data)], 0
+        return [canon_row(data)], 0
     raise LoaderError("invalid_json_root")
 
 
@@ -110,7 +116,7 @@ def _load_jsonl(path: str) -> tuple:
         if not line:
             continue
         try:
-            rec = _canon_row(json.loads(line))
+            rec = canon_row(json.loads(line))
         except json.JSONDecodeError:
             bad += 1
             continue
@@ -125,7 +131,7 @@ def _load_excel(path: str) -> tuple:
         raise LoaderError(f"excel_read_failed: {e}")
     records, bad = [], 0
     for row in df.to_dict("records"):
-        rec = _canon_row(row)
+        rec = canon_row(row)
         if not (rec.get("html") or rec.get("content")):
             bad += 1  # 既无网页源码也无正文的行没有价值
             continue

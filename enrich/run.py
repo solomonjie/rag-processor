@@ -49,6 +49,28 @@ REGIONS = [
 ]
 UNKNOWN_REGION = "未知"
 
+
+def match_region(hint) -> str | None:
+    """上游/爬取侧 region hint → 省级标准名；匹配不了返回 None（走 LLM 抽取）。
+
+    兼容常见写法："陕西省 西安市"取首段；"北京"补"市"；"中国"/"全国"这类
+    非省级值直接忽略（协议里 authorRegion 就常是"中国"）。
+    """
+    if not hint:
+        return None
+    s = str(hint).strip()
+    if not s or s in ("中国", "全国"):
+        return None
+    first = s.split()[0]
+    if first == UNKNOWN_REGION:  # 上游没识别出来≠没有发生地，交给 LLM
+        return None
+    if first in REGIONS:
+        return first
+    for suffix in ("市", "省"):
+        if first + suffix in REGIONS:
+            return first + suffix
+    return s if s in REGIONS else None
+
 SYSTEM_PROMPT = (
     "你是新闻审核与标注助手。只输出 JSON，不输出任何解释文字。"
     "判断基于正文证据，广告/软文判定宁可保守：拿不准时 is_ad 输出 true。"
@@ -132,11 +154,15 @@ def _to_verdict(data: dict, allowed_tags: set) -> Verdict:
 
 # vllm 服务端不支持 guided_json 时自动降级为普通生成+白名单校验
 _use_guided = True
+# OpenAI 兼容的 JSON 输出模式（DeepSeek 实测偶发非 JSON 首答，两次把记录打进死信；
+# system prompt 已含"JSON"字样，满足 DeepSeek json_object 的使用前提）。服务端
+# 不支持时自动摘除该参数重试
+_use_json_mode = True
 
 
 async def _enrich_one(client: AsyncOpenAI, sem: asyncio.Semaphore,
                      item: dict, tags) -> Verdict:
-    global _use_guided
+    global _use_guided, _use_json_mode
     tag_names = [t[0] for t in tags]
     allowed = set(tag_names)
     prompt = build_user_prompt(item, tags)
@@ -150,11 +176,13 @@ async def _enrich_one(client: AsyncOpenAI, sem: asyncio.Semaphore,
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,
-                max_tokens=300,
+                max_tokens=SETTINGS.llm_max_tokens,
                 timeout=SETTINGS.llm_timeout,
             )
             if _use_guided:
                 kwargs["extra_body"] = {"guided_json": _guided_schema(tag_names)}
+            if _use_json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
             try:
                 resp = await client.chat.completions.create(**kwargs)
                 data = json.loads(resp.choices[0].message.content)
@@ -166,6 +194,11 @@ async def _enrich_one(client: AsyncOpenAI, sem: asyncio.Semaphore,
                 if _use_guided and ("guided" in msg.lower() or "400" in msg):
                     log.warning("服务端不支持 guided_json，降级为普通生成 + 白名单校验")
                     _use_guided = False
+                    continue
+                if _use_json_mode and ("response_format" in msg.lower()
+                                       or "json_object" in msg.lower() or "400" in msg):
+                    log.warning("服务端不支持 response_format=json_object，降级重试")
+                    _use_json_mode = False
                     continue
                 log.warning("LLM 调用失败(第 %d 次) url=%s: %s", attempt, item["url"], msg)
                 await asyncio.sleep(2 * attempt)
@@ -179,13 +212,38 @@ async def _enrich_batch(items: List[dict], tags) -> list:
         timeout=SETTINGS.llm_timeout,
     )
     sem = asyncio.Semaphore(SETTINGS.llm_concurrency)
-    tasks = [_enrich_one(client, sem, it, tags) for it in items]
-    return await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        tasks = [_enrich_one(client, sem, it, tags) for it in items]
+        return await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        # 必须在 loop 存活期内关闭：asyncio.run 关闭 loop 后遗留的 httpx 连接池
+        # 会在死 loop 上清理连接，报 "Event loop is closed"（清理任务虽无害但持续刷日志）
+        await client.close()
 
 
 def enrich_batch(items: List[dict], tags) -> list:
     """并发判定一批条目。返回与 items 等长的列表：Verdict 或 EnrichError。"""
     return asyncio.run(_enrich_batch(items, tags))
+
+
+def dedup_enrich(items: List[dict], tag_list) -> tuple:
+    """URL 去重（Milvus 已入库的跳过，省 LLM）+ 并发判定。
+
+    文件路径（_run_wave）与流路径（common/stream.py）共用的处理核心。
+    返回 (existing_ids, fresh, verdicts)：verdicts 与 fresh 对齐（Verdict 或异常）。
+    """
+    existing = _existing_ids([r["node_id"] for r in items])
+    fresh = [r for r in items if r["node_id"] not in existing]
+    verdicts = enrich_batch(fresh, tag_list) if fresh else []
+    return existing, fresh, verdicts
+
+
+def apply_verdict(item: dict, v) -> dict:
+    """合并判定与记录 → enrich 产物行（region hint 优先于 LLM 抽取）。"""
+    hint = match_region(item.get("region"))
+    if hint:
+        v.region = hint
+    return {**item, "verdict": asdict(v)}
 
 
 # ---------------------------------------------------------------- URL 去重
@@ -267,9 +325,7 @@ def sweep() -> int:
 
 def _run_wave(batch: str, out_dir: str, files: list, pool: list, tag_list) -> int:
     """判定并写回一波文件：Milvus 查重 → 一个并发池 → 按文件产出。返回完成文件数。"""
-    existing = _existing_ids([r["node_id"] for r in pool])
-    fresh = [r for _, _, rows, _ in files for r in rows if r["node_id"] not in existing]
-    verdicts = enrich_batch(fresh, tag_list) if fresh else []
+    existing, fresh, verdicts = dedup_enrich(pool, tag_list)
     vi = 0  # verdicts 与 fresh 同序推进
 
     done = 0
@@ -281,17 +337,13 @@ def _run_wave(batch: str, out_dir: str, files: list, pool: list, tag_list) -> in
                 continue
             v = verdicts[vi]
             vi += 1
-            if isinstance(v, EnrichError):
+            if isinstance(v, BaseException):  # EnrichError 及其它异常（gather 返回值）
                 deads.append({"stage": "enrich", "reason": str(v), "item": it})
                 stats["dead_letter"] += 1
             else:
-                # 爬取侧自带合法 region 时优先于 LLM 抽取（结构化字段更可靠）
-                hint = it.get("region")
-                if hint in REGIONS and hint != UNKNOWN_REGION:
-                    v.region = hint
                 if not v.keep:
                     stats[v.drop_reason] += 1
-                out_rows.append({**it, "verdict": asdict(v)})
+                out_rows.append(apply_verdict(it, v))
 
         if out_rows:
             stats["out"] = len(out_rows)

@@ -36,6 +36,9 @@ class Settings:
     llm_api_key = os.getenv("LLM_Api_Key", "dummy")  # vllm 不校验，SDK 要求非空
     llm_timeout = _int("LLM_Timeout", 120)
     llm_concurrency = _int("LLM_Concurrency", 16)
+    # 上限而非消耗量：混合推理模型思维链+正文都算在内，给太小思维链
+    # 烧光预算后 content 为空串（json.loads 直接失败）
+    llm_max_tokens = _int("LLM_Max_Tokens", 4096)
 
     # ---- 业务 ----
     # 监测主体（逗号分隔）。为空 = 不做相关性过滤（relevant 恒真）
@@ -48,24 +51,13 @@ class Settings:
     running_dir = os.getenv("Running_Dir", "data/running")        # 进行中批次；完成后整目录删除
     dead_letter_dir = os.getenv("Dead_Letter_Dir", "data/dead_letter")  # 各阶段死信（不随批次清理）
 
-    # ---- MinIO 批次源（可选；Minio_Endpoint 留空 = 纯本地模式）----
-    # 约定：bucket 的 Minio_Prefix 下一级前缀 = 一个批次（raw/<batch_id>/**）
-    minio_endpoint = os.getenv("Minio_Endpoint", "")              # host:port
-    minio_access_key = os.getenv("Minio_Access_Key", "")
-    minio_secret_key = os.getenv("Minio_Secret_Key", "")
-    minio_bucket = os.getenv("Minio_Bucket", "rag")
-    minio_prefix = os.getenv("Minio_Prefix", "raw")
-    minio_secure = os.getenv("Minio_Secure", "false").lower() in ("1", "true", "yes")
-    # 批次入库后是否删除远端前缀。MinIO 定位是暂存：入 Milvus 即删，worker 无需固定盘
-    minio_delete_on_done = os.getenv("Minio_Delete_On_Done", "true").lower() in ("1", "true", "yes")
-    # 死信远端前缀（不随批次清理；worker 无固定盘时这是死信的持久层）
-    minio_deadletter_prefix = os.getenv("Minio_Deadletter_Prefix", "deadletter")
-
-    # ---- Kafka 落盘器（kafka_ingest.py 独立进程；Kafka_Bootstrap 留空 = 不启用）----
-    kafka_bootstrap = os.getenv("Kafka_Bootstrap", "")
-    kafka_topic = os.getenv("Kafka_Topic", "")
-    kafka_group = os.getenv("Kafka_Group", "rag-ingest")
-    ingest_window_minutes = _int("Ingest_Window_Minutes", 5)  # 消息无 batch_id 时的时间窗口聚合
+    # ---- RocketMQ 直连消费（worker 流模式；Rocketmq_NameSrv 留空 = 文件模式）----
+    # 多 NameServer 地址分号分隔；4.x remoting 协议。客户端为 C++ binding（librocketmq，
+    # 仅 Linux）——宿主机开发不配置此项，走本地 inbox 文件路径
+    rocketmq_namesrv = os.getenv("Rocketmq_NameSrv", "")
+    rocketmq_topic = os.getenv("Rocketmq_Topic", "yqms_thirdparty_push")
+    rocketmq_group = os.getenv("Rocketmq_Group", "rag-worker")
+    # 同 group 多实例 = 横向扩展（队列自动分摊），无需其他协调
 
     # ---- 运行参数 ----
     batch_size = _int("Batch_Size", 64)

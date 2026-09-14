@@ -1,20 +1,17 @@
-"""流水线总入口（默认单 worker，D1）：顺序驱动三个阶段，批次文件夹 + 目录即队列。
+"""流水线总入口：两条到达路径，共用同一套 clean/enrich/index 处理核心。
 
-    MinIO raw/<batch>/（可选）──┐
-    data/inbox/<batch>/（本地）─┤
-                               ▼
-    data/running/<batch>/inbox ──[clean]→ 1_cleaned ──[enrich]→ 2_enriched ──[index]→ Milvus
-                               │  三阶段目录全部消费完（文件都在 _done/）
-                               ▼
-                    删除 MinIO 批次前缀 → 删除 running/<batch>/ 整个目录（死信不删）
+    流模式（生产）：配置了 Rocketmq_NameSrv 时直连消费——消息 → clean → enrich →
+        index，index 成功才 ack（at-least-once；重投靠 node_id 去重 + upsert 幂等
+        消化）。积压留在 broker 上，消费线程阻塞即背压；水平扩展 = 同 group 多实例。
+        binding 为 C++ 库仅 Linux，须容器内运行。
 
-状态机（文件位置即状态）：文件在阶段目录=待处理；在 _done/=该阶段成功；
-enrich/index 失败文件原地保留、批次不完成；批次完成才整批清理（先远端后本地，崩溃安全）。
-阶段可独立运行：python -m clean.run|enrich.run|index.run --once（回放/补跑）。
+    文件模式（开发/手工导入）：本地 data/inbox/ → running/<batch>/ 三阶段目录，
+        文件位置即状态（目录=待处理，_done/=成功），阶段可独立重跑：
+        python -m clean.run|enrich.run|index.run --once
 
 用法：
-    python worker.py          # 常驻
-    python worker.py --once   # 排空当前所有批次后退出（cron 用）
+    python worker.py          # 按配置进流模式（常驻）或文件模式（常驻轮询）
+    python worker.py --once   # 文件模式：排空当前所有批次后退出（cron 用）
 """
 import argparse
 import logging
@@ -30,10 +27,31 @@ from index import run as s3
 log = logging.getLogger("worker")
 
 
+def run_file_mode(once: bool) -> None:
+    """文件模式：顺序驱动三阶段 sweep，目录即队列。"""
+    log.info("worker 文件模式 inbox=%s running=%s collection=%s%s",
+             SETTINGS.inbox_dir, SETTINGS.running_dir, SETTINGS.collection,
+             "（--once 模式）" if once else "")
+    while True:
+        # 顺序：先抽完存量再判定、判完再入库；单轮内多次循环让本轮产物流到底
+        progressed = 0
+        for stage in (s1, s2, s3):
+            try:
+                progressed += stage.sweep()
+            except Exception as e:
+                log.exception("阶段 sweep 异常（%s）: %s", stage.__name__, e)
+        if once:
+            if progressed == 0:
+                break
+        elif progressed == 0:
+            time.sleep(SETTINGS.poll_interval)
+    log.info("worker 结束")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="知识库构建流水线（clean/enrich/index 三阶段单 worker，批次文件夹制）")
-    parser.add_argument("--once", action="store_true", help="排空当前全部批次后退出")
+        description="知识库构建流水线（clean/enrich/index，流模式直连 RocketMQ / 文件模式本地目录）")
+    parser.add_argument("--once", action="store_true", help="文件模式：排空当前全部批次后退出")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -43,29 +61,17 @@ def main() -> None:
     validate()
     ensure_dirs(SETTINGS.inbox_dir, SETTINGS.running_dir, SETTINGS.dead_letter_dir)
 
-    log.info("worker 启动 inbox=%s running=%s collection=%s%s",
-             SETTINGS.inbox_dir, SETTINGS.running_dir, SETTINGS.collection,
-             "（--once 模式）" if args.once else "")
-
+    if SETTINGS.rocketmq_namesrv and SETTINGS.rocketmq_topic:
+        if args.once:
+            raise SystemExit("--once 仅支持文件模式；流模式常驻（不配置 Rocketmq_NameSrv 即文件模式）")
+        from common import stream
+        stream.run()
+        return
     try:
-        while True:
-            # 顺序：先抽完存量再判定、判完再入库；单轮内多次循环让本轮产物流到底
-            progressed = 0
-            for stage in (s1, s2, s3):
-                try:
-                    progressed += stage.sweep()
-                except Exception as e:
-                    log.exception("阶段 sweep 异常（%s）: %s", stage.__name__, e)
-            if args.once:
-                if progressed == 0:
-                    break
-            elif progressed == 0:
-                time.sleep(SETTINGS.poll_interval)
+        run_file_mode(args.once)
     except KeyboardInterrupt:
         log.info("收到中断，退出")
         sys.exit(0)
-
-    log.info("worker 结束")
 
 
 if __name__ == "__main__":

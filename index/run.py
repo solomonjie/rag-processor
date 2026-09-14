@@ -43,7 +43,7 @@ def build_node(row: dict) -> TextNode:
 def sweep() -> int:
     """处理所有进行中批次的 2_enriched，返回处理文件数。写入失败时文件不动，下轮重试。
 
-    sweep 末尾清理完成批次（三阶段目录全空的批次：先删 MinIO 前缀、再删本地目录）。
+    sweep 末尾清理完成批次（三阶段目录全空的批次：删除整个批次目录）。
     """
     batches = iter_batches()
     if not batches:
