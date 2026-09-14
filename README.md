@@ -20,7 +20,7 @@
 **可靠性全部交给 RocketMQ + Milvus，没有 MinIO/中间暂存层**：
 
 - **ack 后置**：消息处理完（index upsert 成功）才返回 CONSUME_SUCCESS；基础设施故障（Milvus/TEI/LLM 网关不可达）返回 RECONSUME_LATER 由 MQ 重投。node_id=md5(url) 去重 + upsert 幂等保证重投无害（at-least-once）
-- **积压在 broker 上**：处理速度受 LLM 限制（每条新闻一次调用），消费线程阻塞等波处理即天然背压——线程池满后客户端停止拉取，MQ 本身就是持久缓冲。**水平扩展 = 同 group 多起几个 worker 容器**，队列自动分摊（competing consumer），无需协调
+- **积压在 broker 上**：处理速度受 LLM 限制（每条新闻一次调用），消费线程阻塞等波处理即天然背压——线程池满后客户端停止拉取，MQ 本身就是持久缓冲。**水平扩展 = 同 group 多起几个 worker 容器**（competing consumer，队列自动分摊），无需协调。注意**单实例在飞上限由消费线程数与 topic 队列数共同决定**（C++ 客户端按队列派发；实测 8 队列时并发被压在 8，扩到 16 队列后 62 条突发一波入齐）——高吞吐场景确认上游 topic 的队列数足够
 - **worker 无需固定盘**：全程内存处理，崩溃由 MQ 重投恢复；唯一要挂卷的是死信目录（见下）
 
 **两条到达路径共用同一套处理核心**（extract_record / dedup_enrich / build_node+upsert），配置决定走哪条：
@@ -110,6 +110,16 @@ docker run -d --name rag-worker --env-file .dockerenv \
   rag-worker                       # 流模式常驻；扩容 = 同参数再起一个（同 group 自动分摊）
 ```
 
+端到端测试（用 `data/pipeline.xlsx` 真实样例当用例；须在 Linux 侧跑，借用镜像即可）：
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm --env-file .dockerenv \
+  -e Dead_Letter_Dir=/app/src/data/dead_letter \
+  -v "c:\enlist\rag-processor:/app/src" \
+  --entrypoint python rag-worker /app/src/e2e_test.py --namesrv host.docker.internal:19876
+python e2e_test.py --cleanup      # 清掉线上库里的测试行（url 前缀匹配，独立执行）
+```
+
 文件模式重放：把批次文件夹放回 `data/running/`（或把文件放回对应阶段目录）再跑该阶段即可，upsert 幂等。死信重放：取出 `item`/`record` 字段写成输入文件放 `data/inbox/`。
 
 ## 代码结构（按阶段分 folder）
@@ -133,6 +143,7 @@ common/             跨阶段共享
   embed.py          TEI 封装
   utils.py          目录扫描/_done 归档/jsonl/死信/批次名清洗
 worker.py           总入口：按配置分流模式 / 文件模式
+e2e_test.py         流模式端到端测试：pipeline.xlsx 真实行当用例 → 推 MQ → 验收线上 Milvus
 create_collection.py 建表/校验 CLI（--drop 重建）
 ```
 
