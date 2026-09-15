@@ -51,13 +51,17 @@ class Settings:
     running_dir = os.getenv("Running_Dir", "data/running")        # 进行中批次；完成后整目录删除
     dead_letter_dir = os.getenv("Dead_Letter_Dir", "data/dead_letter")  # 各阶段死信（不随批次清理）
 
-    # ---- RocketMQ 直连消费（worker 流模式；Rocketmq_NameSrv 留空 = 文件模式）----
-    # 多 NameServer 地址分号分隔；4.x remoting 协议。客户端为 C++ binding（librocketmq，
-    # 仅 Linux）——宿主机开发不配置此项，走本地 inbox 文件路径
-    rocketmq_namesrv = os.getenv("Rocketmq_NameSrv", "")
+    # ---- RocketMQ 直连消费（worker 流模式；Rocketmq_Endpoint 留空 = 文件模式）----
+    # endpoint 是 Proxy 的 gRPC 地址（默认端口 8081），不是 NameServer 地址。
+    # 客户端为官方 rocketmq-python-client（5.x gRPC 协议，纯 Python 无 C++ 依赖，
+    # Windows/Linux 均可直跑）
+    rocketmq_endpoint = os.getenv("Rocketmq_Endpoint", "")
     rocketmq_topic = os.getenv("Rocketmq_Topic", "yqms_thirdparty_push")
     rocketmq_group = os.getenv("Rocketmq_Group", "rag-worker")
-    # 同 group 多实例 = 横向扩展（队列自动分摊），无需其他协调
+    # ACL（上游开启认证时填；本地/未开启留空即可）
+    rocketmq_access_key = os.getenv("Rocketmq_AccessKey", "")
+    rocketmq_secret_key = os.getenv("Rocketmq_SecretKey", "")
+    # 同 group 多实例 = 横向扩展（pop 消费队列自动分摊），无需其他协调
 
     # ---- 运行参数 ----
     batch_size = _int("Batch_Size", 64)

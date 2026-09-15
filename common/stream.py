@@ -1,26 +1,34 @@
-"""RocketMQ 直连消费（worker 流模式）：消息 → clean → enrich → index，index 成功才 ack。
+"""RocketMQ 5.x gRPC 直连消费（worker 流模式）：SimpleConsumer 收一批 → clean →
+enrich → index，index 成功才 ack。
 
-与文件路径（批次文件夹三阶段）的关系：两条到达路径共用同一套处理核心
-（extract_record / dedup_enrich / build_node + upsert），区别只在状态载体——
-文件路径以目录为状态（阶段可独立重跑），流路径全程内存、以 MQ 重投为恢复机制：
+与文件路径（批次文件夹三阶段）共用同一套处理核心（extract_record /
+dedup_enrich / build_node + upsert），区别只在状态载体——文件路径以目录为状态
+（阶段可独立重跑），流路径全程内存、以 MQ 重投为恢复机制。
 
-    消费回调线程：JSON 解析 + clean（毫秒级，就地完成；失败即终态进死信）
-                 → 记录入波缓冲，回调阻塞等待本波处理结果
-    波线程：      取走当前全部待处理记录 → URL 去重 → enrich 并发池 → index upsert
-                 → 逐条唤醒回调
-    回调返回：    处理完成 CONSUME_SUCCESS；基础设施故障 RECONSUME_LATER → RocketMQ
-                 重投（node_id 去重 + upsert 幂等保证重投无害，at-least-once）
+    消费循环（单线程串行，一批即一波）：
+        receive(max_message_num, invisible_duration)   # 长轮询，空转等待
+        clean（毫秒级，就地完成；失败即终态进死信）
+        波处理：URL 去重 → enrich 并发池 → index upsert（_process_wave）
+        ack(message)  # 处理成功才确认；不 ack 的消息在 invisible_duration
+                      # 到期后重新可见 = at-least-once 重投
 
-积压与背压：处理速度受 LLM 限制，消费线程阻塞等波即天然背压——线程池满后客户端
-停止拉取，积压留在 broker 上（MQ 本身就是持久缓冲）。水平扩展 = 同 group 多实例。
+可靠性（与 4.x 回调模式等价，机制不同）：
+- 重投无 %RETRY%/%DLQ% 跳转，靠不可见时间到期重新可见。invisible_duration 必须
+  大于最慢一波的处理时长（默认 600s），否则处理中的消息提前重见造成重复处理
+  （无害：node_id 去重 + upsert 幂等，只是白花 LLM 钱）；
+- 数据级终态失败（非法 JSON / clean 失败 / LLM 判定失败 / 字段超长）写死信后
+  仍会 ack——不 ack 就永远重投同一具尸体（4.x 时代有 maxReconsumeTimes 兜底，
+  SimpleConsumer 没有）；
+- 基础设施故障（Milvus/TEI/LLM 不可达）不 ack，等重新可见即天然重试。
 
-坑（rocketmq-client-python 2.0.0）：回调必须返回 ConsumeStatus 枚举，返回 bool 会
-被按 0/1 转换且语义相反（True→RECONSUME_LATER，False→CONSUME_SUCCESS=丢数据）。
+背压：串行 receive——上一波处理完才拉下一波，积压留在 broker 上（MQ 是持久
+缓冲）。水平扩展 = 同 group 多实例（pop 消费服务端自动分配队列，无需协调）。
+
+客户端：官方 rocketmq-python-client（纯 gRPC，无 C++ 依赖，Windows/Linux 均可
+运行；开发可本地直跑，生产容器化）。
 """
-import itertools
 import json
 import logging
-import threading
 import time
 from collections import Counter
 
@@ -34,6 +42,12 @@ from enrich.run import apply_verdict, dedup_enrich
 from index.run import build_node, upsert_isolated
 
 log = logging.getLogger("stream")
+
+# 消息不可见时长：须大于最慢一波的处理时间（LLM 并发 16 × 一波 64 条最坏几分钟）
+INVISIBLE_SECONDS = 600
+# 长轮询等待秒数。5.1.3 proxy 实测 bug：>10s（客户端默认 20s）receive 报
+# 50001 NullPointerException（ReceiveMessageActivity）——钉在 10 以内，空批即回。
+AWAIT_SECONDS = 10
 
 
 def _slim(rec: dict) -> dict:
@@ -56,48 +70,12 @@ def _dead(entry: dict) -> bool:
         return False
 
 
-# ---------------------------------------------------------------- 凑波缓冲
-
-class _Wave:
-    """跨回调凑波：回调提交记录后阻塞，波线程处理完这一波再逐条唤醒。
-
-    ack 后置的核心：波内任何一条没处理完，相关回调就不返回（MQ 不会重投）；
-    处理失败的条目唤醒时告知 False，由回调返回重投。回调线程数即并发上限，
-    pending 天然有界（≤ 消费线程数），无需额外的波大小护栏。
-    """
-
-    def __init__(self):
-        self._cv = threading.Condition()
-        self._ctr = itertools.count()
-        self._pending = []   # [(seq, record)]
-        self._done = {}      # seq -> bool（True=已处理可 ack / False=转重投）
-
-    def submit(self, item: dict) -> bool:
-        with self._cv:
-            seq = next(self._ctr)
-            self._pending.append((seq, item))
-            self._cv.notify_all()
-        while True:
-            with self._cv:
-                if seq in self._done:
-                    return self._done.pop(seq)
-                self._cv.wait(timeout=5)
-
-    def take(self) -> list:
-        """取走当前全部待处理记录（空则阻塞等待；低流量时波小、高流量时自然攒大）。"""
-        while True:
-            with self._cv:
-                if self._pending:
-                    items = self._pending
-                    self._pending = []
-                    return items
-                self._cv.wait(timeout=5)
-
-    def settle(self, items: list, results: list) -> None:
-        with self._cv:
-            for (seq, _), ok in zip(items, results):
-                self._done[seq] = ok
-            self._cv.notify_all()
+def _ack(consumer, m) -> None:
+    """ack 单条。失败不必处理：消息会在 invisible 到期后重投（去重+幂等，无害）。"""
+    try:
+        consumer.ack(m)
+    except Exception as e:
+        log.warning("ack 失败（等不可见到期重投）: %s", e)
 
 
 # ---------------------------------------------------------------- 波处理
@@ -173,75 +151,68 @@ def _fmt(c: Counter) -> str:
     return " ".join(parts) or "nothing"
 
 
-def _wave_loop(wave: _Wave) -> None:
-    while True:
-        items = wave.take()
-        try:
-            results = _process_wave([it for _, it in items])
-        except Exception:
-            log.exception("波处理意外异常（整波转重投）")
-            results = [False] * len(items)
-        wave.settle(items, results)
-
-
-# ---------------------------------------------------------------- 消费回调
-
-def _make_callback(cs, wave: _Wave):
-    def on_msg(msg):
-        # binding 单条投递为 Message；若版本支持批量投递则是 list——统一处理
-        msgs = msg if isinstance(msg, (list, tuple)) else [msg]
-        ok = True
-        for m in msgs:
-            body = m.body
-            # ---- clean（轻量、就地完成；失败即终态，不进波）----
-            try:
-                rec = canon_row(json.loads(body.decode("utf-8")))
-            except Exception:
-                if not _dead({"stage": "ingest", "reason": "invalid_json",
-                              "body": body.decode("utf-8", "replace")[:2000]}):
-                    ok = False
-                continue
-            try:
-                item = extract_record(rec)
-            except ExtractError as e:
-                if e.reason in DROP_REASONS:
-                    log.debug("[stream] 丢弃无价值记录: %s", e.reason)
-                    continue
-                if not _dead({"stage": "clean", "reason": e.reason, "record": _slim(rec)}):
-                    ok = False
-                continue
-            # ---- 进入处理波，阻塞到 index 完成 ----
-            if not wave.submit(item):
-                ok = False
-        return cs.CONSUME_SUCCESS if ok else cs.RECONSUME_LATER
-
-    return on_msg
-
+# ---------------------------------------------------------------- 消费主循环
 
 def run() -> None:
-    """流模式入口（常驻）。Ctrl-C 退出时未 ack 的消息由 RocketMQ 重投。"""
-    from rocketmq.client import ConsumeStatus, PushConsumer  # C++ binding，仅 Linux
+    """流模式入口（常驻）。Ctrl-C 退出时未 ack 的消息由不可见到期重投。"""
+    from rocketmq import ClientConfiguration, Credentials, SimpleConsumer
 
     ensure_dirs(SETTINGS.dead_letter_dir)
-    wave = _Wave()
-    threading.Thread(target=_wave_loop, args=(wave,), name="wave", daemon=True).start()
-
-    consumer = PushConsumer(SETTINGS.rocketmq_group)
-    consumer.set_name_server_address(SETTINGS.rocketmq_namesrv)
-    # 消费线程数 = 在飞上限：回调阻塞等波处理，线程池满即背压
-    try:
-        consumer.set_thread_count(max(32, SETTINGS.llm_concurrency * 4))
-    except AttributeError:
-        pass  # binding 版本没有的调优项，静默跳过
-    consumer.subscribe(SETTINGS.rocketmq_topic, _make_callback(ConsumeStatus, wave))
-    consumer.start()
-    log.info("流模式启动: topic=%s group=%s namesrv=%s → collection=%s",
-             SETTINGS.rocketmq_topic, SETTINGS.rocketmq_group, SETTINGS.rocketmq_namesrv,
+    creds = Credentials(SETTINGS.rocketmq_access_key, SETTINGS.rocketmq_secret_key)
+    consumer = SimpleConsumer(
+        ClientConfiguration(SETTINGS.rocketmq_endpoint, creds),
+        SETTINGS.rocketmq_group,
+        await_duration=AWAIT_SECONDS,
+    )
+    consumer.startup()
+    consumer.subscribe(SETTINGS.rocketmq_topic)
+    log.info("流模式启动: topic=%s group=%s endpoint=%s → collection=%s",
+             SETTINGS.rocketmq_topic, SETTINGS.rocketmq_group, SETTINGS.rocketmq_endpoint,
              SETTINGS.collection)
     try:
         while True:
-            time.sleep(1)
+            try:
+                # 一批即一波：batch_size 限在飞量，串行 receive 即背压
+                msgs = consumer.receive(SETTINGS.batch_size, INVISIBLE_SECONDS)
+            except Exception as e:
+                # proxy/网络瞬断：退避重试，积压在 broker 上不受影响
+                log.warning("receive 失败（5s 后重试）: %s", e)
+                time.sleep(5)
+                continue
+            if not msgs:
+                continue
+
+            items, done = [], []  # (msg, item) 进波处理 / msg 就地终态待 ack
+            for m in msgs:
+                body = m.body
+                # ---- clean（轻量、就地完成；失败即终态，不进波）----
+                try:
+                    rec = canon_row(json.loads(body.decode("utf-8")))
+                except Exception:
+                    if _dead({"stage": "ingest", "reason": "invalid_json",
+                              "body": body.decode("utf-8", "replace")[:2000]}):
+                        done.append(m)
+                    continue
+                try:
+                    item = extract_record(rec)
+                except ExtractError as e:
+                    if e.reason in DROP_REASONS:
+                        log.debug("[stream] 丢弃无价值记录: %s", e.reason)
+                        done.append(m)  # 丢弃也是终态
+                    elif _dead({"stage": "clean", "reason": e.reason,
+                                "record": _slim(rec)}):
+                        done.append(m)
+                    continue
+                items.append((m, item))
+
+            results = _process_wave([it for _, it in items]) if items else []
+            # ack：就地终态的 + 波处理成功的；其余不 ack，等不可见到期重投
+            for m in done:
+                _ack(consumer, m)
+            for (m, _), ok in zip(items, results):
+                if ok:
+                    _ack(consumer, m)
     except KeyboardInterrupt:
-        log.info("收到中断，退出（未 ack 的消息由 RocketMQ 重投）")
+        log.info("收到中断，退出（未 ack 的消息由不可见到期重投）")
     finally:
         consumer.shutdown()

@@ -1,9 +1,10 @@
 """流水线总入口：两条到达路径，共用同一套 clean/enrich/index 处理核心。
 
-    流模式（生产）：配置了 Rocketmq_NameSrv 时直连消费——消息 → clean → enrich →
-        index，index 成功才 ack（at-least-once；重投靠 node_id 去重 + upsert 幂等
-        消化）。积压留在 broker 上，消费线程阻塞即背压；水平扩展 = 同 group 多实例。
-        binding 为 C++ 库仅 Linux，须容器内运行。
+    流模式（生产）：配置了 Rocketmq_Endpoint（Proxy gRPC 地址）时直连消费——
+        消息 → clean → enrich → index，index 成功才 ack（at-least-once；重投靠
+        node_id 去重 + upsert 幂等消化）。积压留在 broker 上，串行 receive 即
+        背压；水平扩展 = 同 group 多实例。客户端为官方 gRPC SDK（纯 Python），
+        任意 OS 可直跑，生产再容器化。
 
     文件模式（开发/手工导入）：本地 data/inbox/ → running/<batch>/ 三阶段目录，
         文件位置即状态（目录=待处理，_done/=成功），阶段可独立重跑：
@@ -61,9 +62,9 @@ def main() -> None:
     validate()
     ensure_dirs(SETTINGS.inbox_dir, SETTINGS.running_dir, SETTINGS.dead_letter_dir)
 
-    if SETTINGS.rocketmq_namesrv and SETTINGS.rocketmq_topic:
+    if SETTINGS.rocketmq_endpoint and SETTINGS.rocketmq_topic:
         if args.once:
-            raise SystemExit("--once 仅支持文件模式；流模式常驻（不配置 Rocketmq_NameSrv 即文件模式）")
+            raise SystemExit("--once 仅支持文件模式；流模式常驻（不配置 Rocketmq_Endpoint 即文件模式）")
         from common import stream
         stream.run()
         return
