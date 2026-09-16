@@ -206,10 +206,13 @@ async def _enrich_one(client: AsyncOpenAI, sem: asyncio.Semaphore,
 
 
 async def _enrich_batch(items: List[dict], tags) -> list:
+    # Bifrost 网关认证：x-bf-vk 虚拟密钥头（Bearer 由 SDK 自动附加）；
+    # 内部根证书走 SSL_CERT_FILE（common/config.py 从 AI_CA_Path 桥接）
     client = AsyncOpenAI(
         base_url=SETTINGS.llm_base_url,
         api_key=SETTINGS.llm_api_key,
         timeout=SETTINGS.llm_timeout,
+        default_headers={"x-bf-vk": SETTINGS.llm_api_key},
     )
     sem = asyncio.Semaphore(SETTINGS.llm_concurrency)
     try:

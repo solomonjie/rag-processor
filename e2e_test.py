@@ -10,15 +10,18 @@
 验收规则：入库行必须满足字段契约（id=md5(url)、published_date 定长 ISO、tags 非空、
 region 非空）；未入库行列为"已丢弃"（正常结局），但**一行都没入库 = FAIL**（链路断了）。
 
-前置（rocketmq binding 仅 Linux——本脚本与 worker 都在容器/WSL 里跑）：
-  1. worker 已在流模式运行（同 topic/group）
-  2. 可达 RocketMQ（--namesrv）与 Milvus（.env 的 Milvus_Server_URL/TOKEN，线上库）
+前置（RocketMQ 5.x 官方 gRPC 客户端，纯 Python——本脚本与 worker 均可直接在
+Windows 宿主机跑，无需容器）：
+  1. worker 已在流模式运行（同 topic/group，endpoint 同一 Proxy）
+  2. 可达 RocketMQ Proxy（--endpoint）与 Milvus（.env 的 Milvus_Server_URL/TOKEN，线上库）
 
 用法：
   python e2e_test.py                     # 全量 62 行
   python e2e_test.py --limit 8           # 快速冒烟（前 8 行）
   python e2e_test.py --skip-send         # 不发送，复验上一轮（url 记录在 data/_e2e_last.json）
   python e2e_test.py --cleanup           # 清理线上测试行（独立执行）
+
+完整链路（build 镜像 → 起容器 → 跑测试）见 README「端到端测试链路」章节。
 """
 import argparse
 import glob
@@ -38,6 +41,7 @@ from enrich.run import REGIONS  # 省级标准名词表（region 非空时校验
 COLL = "product_knowledge_base"  # 事故规约：测试脚本 collection 一律硬编码
 PREFIX = "http://example.com/e2e-"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+HTML_RE = re.compile(r"</?(?:div|p|br|span|img|section|article)\b", re.I)
 BASE = os.path.dirname(os.path.abspath(__file__))  # 相对脚本定位，不依赖 cwd
 LAST_RUN = os.path.join(BASE, "data", "_e2e_last.json")
 STABLE_POLLS = 9   # 连续 N 次轮询行数不变 = settle（窗口要长于一波 LLM 处理时间）
@@ -68,18 +72,21 @@ def _enc(o):
     return int(o.replace(tzinfo=timezone.utc).timestamp() * 1000) if isinstance(o, datetime) else str(o)
 
 
-def send(namesrv: str, msgs: list) -> None:
-    from rocketmq.client import Message, Producer
-    p = Producer("rag-e2e-producer")
-    p.set_name_server_address(namesrv)
-    p.start()
+def send(endpoint: str, msgs: list) -> None:
+    from rocketmq import ClientConfiguration, Credentials, Message, Producer
+
+    p = Producer(ClientConfiguration(endpoint, Credentials("", "")),
+                 topics=(SETTINGS.rocketmq_topic,))
+    p.startup()
     try:
         for tag, body in msgs:
-            m = Message(SETTINGS.rocketmq_topic)
-            m.set_body(body if isinstance(body, bytes)
-                       else json.dumps(body, ensure_ascii=False, default=_enc).encode("utf-8"))
-            r = p.send_sync(m)
-            print(f"  sent {tag}: status={r.status}")
+            m = Message()
+            m.topic = SETTINGS.rocketmq_topic
+            m.body = body if isinstance(body, bytes) \
+                else json.dumps(body, ensure_ascii=False, default=_enc).encode("utf-8")
+            m.tag = tag
+            r = p.send(m)
+            print(f"  sent {tag}: msg_id={r.message_id}")
     finally:
         p.shutdown()
 
@@ -87,7 +94,7 @@ def send(namesrv: str, msgs: list) -> None:
 def query_urls(client, urls: list) -> list:
     expr = "url in [" + ",".join(json.dumps(u) for u in urls) + "]"
     return client.query(COLL, filter=expr,
-                        output_fields=["id", "url", "region", "published_date", "tags"],
+                        output_fields=["id", "url", "region", "published_date", "tags", "text"],
                         limit=len(urls))
 
 
@@ -124,7 +131,8 @@ def scan_dead_letters(start: float) -> list:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--file", default=os.path.join(BASE, "data", "pipeline.xlsx"))
-    ap.add_argument("--namesrv", default="localhost:19876")
+    ap.add_argument("--endpoint", default="localhost:8081",
+                    help="RocketMQ Proxy gRPC 地址")
     ap.add_argument("--timeout", type=int, default=420, help="settle 轮询超时秒数")
     ap.add_argument("--limit", type=int, default=0, help="只发前 N 行（0=全部）")
     ap.add_argument("--skip-send", action="store_true", help="不发送，复验上一轮 url")
@@ -157,8 +165,8 @@ def main() -> None:
                   open(LAST_RUN, "w", encoding="utf-8"))
         msgs = [(f"row{i}", {**c, "url": u}) for i, (c, u) in enumerate(zip(cases, urls))]
         msgs.append(("bad-json", b"{not-json"))
-        print(f"[1/4] 发送 {len(cases)} 行（来自 {args.file}）+ 1 条坏 JSON → {args.namesrv}")
-        send(args.namesrv, msgs)
+        print(f"[1/4] 发送 {len(cases)} 行（来自 {args.file}）+ 1 条坏 JSON → {args.endpoint}")
+        send(args.endpoint, msgs)
 
     print("[2/4] 等待处理 settle（入库行数稳定）...")
     rows = wait_settled(client, urls, args.timeout)
@@ -174,6 +182,8 @@ def main() -> None:
             errs.append(f"date={r['published_date']!r}")
         if not r["tags"]:
             errs.append("tags空")
+        if HTML_RE.search(r["text"] or ""):
+            errs.append("text含HTML标签")
         if (r["region"] or "").strip() and r["region"] not in REGIONS:
             errs.append(f"region={r['region']!r} 非省级标准名")
         # region 允许为空（契约 §C：region 当前无人读取，仅未来预留；空=判不出）
@@ -194,7 +204,7 @@ def main() -> None:
     if not args.skip_send:
         print("[4/4] 重发第 1 行 url（场景 D）+ 坏 JSON 死信核验（场景 E）")
         cases0 = load_cases(args.file)[:1]
-        send(args.namesrv, [("dup", {**cases0[0], "url": urls[0]})])
+        send(args.endpoint, [("dup", {**cases0[0], "url": urls[0]})])
         time.sleep(15)
     dup = query_urls(client, [urls[0]])
 

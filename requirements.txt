@@ -2,9 +2,9 @@
 trafilatura>=2.0
 pandas==2.3.3          # xlsx 输入读取
 openpyxl==3.1.5        # pandas 的 xlsx 引擎
-rocketmq-client-python==2.0.0  # RocketMQ 4.x 客户端（C++ binding 仅 Linux；流模式容器内运行）
+rocketmq-python-client==5.1.2  # RocketMQ 5.x 官方客户端（gRPC 协议，纯 Python 跨平台）
 llama-index-core==0.14.15
-llama-index-embeddings-text-embeddings-inference==0.4.2
+llama-index-embeddings-openai==0.5.2
 llama-index-vector-stores-milvus==1.0.0
 pymilvus==2.6.9
 openai==2.26.0
