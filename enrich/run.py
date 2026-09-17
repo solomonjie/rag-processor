@@ -93,15 +93,19 @@ def build_user_prompt(item: dict, tags: Sequence[Tuple[str, str]]) -> str:
     if SETTINGS.monitored_entities:
         entity_part = "、".join(SETTINGS.monitored_entities)
     else:
-        entity_part = "（未配置监测主体，relevant 一律输出 true）"
+        entity_part = "（未配置监测主体，以【候选标签】是否适用作为相关性判据）"
     full_text = f"标题: {item['title']}\n{item['content']}"[:SETTINGS.judge_input_max_chars]
     return f"""【任务】对下面的新闻完成判定与标注：
 
 1. is_ad：是否为广告/软文/推广/导购/垃圾页面
 2. is_news：是否为正常新闻内容（资讯、报道、评论、讨论帖等有信息量的内容）
 3. relevant：是否与监测主体相关（监测主体：{entity_part}）
-4. tags：从【候选标签】中选 1~3 个最匹配的，只能从候选里选，不得自造
+4. tags：从【候选标签】中选 1~3 个最匹配的，只能从候选里选，不得自造；
+   若没有任何候选标签与文章匹配，tags 输出空数组且 relevant 必须为 false
+   （无标签可打的新闻不属于本知识库，宁可丢弃不得硬贴标签）
 5. region：新闻发生地，从【地区列表】中选一个；正文没有明确发生地时选 "未知"
+6. 输出为一个 JSON 对象，六个字段缺一不可（tags 为空数组时按第 4 条置 relevant=false）：
+   {{"is_ad": <bool>, "is_news": <bool>, "relevant": <bool>, "tags": [<候选标签>], "region": "<省份或未知>", "why": "<一句话依据>"}}
 
 【候选标签】
 {tag_lines}
@@ -123,7 +127,6 @@ def _guided_schema(tag_names: List[str]) -> dict:
             "tags": {
                 "type": "array",
                 "items": {"type": "string", "enum": tag_names},
-                "minItems": 1,
                 "maxItems": 3,
             },
             "region": {"type": "string", "enum": REGIONS},
@@ -148,7 +151,7 @@ def _to_verdict(data: dict, allowed_tags: set) -> Verdict:
         return Verdict(False, "irrelevant", tags, region, why)
     if not tags:
         # 保留的新闻必须至少有一个有效标签，否则消费端 tags 过滤永远漏掉它
-        raise EnrichError("no_valid_tags")
+        raise EnrichError(f"no_valid_tags model_tags={data.get('tags')!r}")
     return Verdict(True, "", tags[:3], region, why)
 
 
@@ -189,6 +192,18 @@ async def _enrich_one(client: AsyncOpenAI, sem: asyncio.Semaphore,
                 return _to_verdict(data, allowed)
             except EnrichError:
                 raise  # 输出结构问题重试也没用，直接死信
+            except json.JSONDecodeError as e:
+                # 截断签名：断点≈末尾 + finish_reason=length（max_tokens 撞顶）
+                c = resp.choices[0].message.content or ""
+                log.warning(
+                    "LLM 输出非法 JSON(第 %d 次) url=%s: %s | finish_reason=%s "
+                    "len=%d 断点=%d%s 尾部=%r",
+                    attempt, item["url"], e, resp.choices[0].finish_reason,
+                    len(c), e.pos,
+                    "（断点≈结尾，输出被截断）" if e.pos >= len(c) - 2 else "",
+                    c[-100:],
+                )
+                await asyncio.sleep(2 * attempt)
             except Exception as e:
                 msg = str(e)
                 if _use_guided and ("guided" in msg.lower() or "400" in msg):
@@ -342,6 +357,7 @@ def _run_wave(batch: str, out_dir: str, files: list, pool: list, tag_list) -> in
             vi += 1
             if isinstance(v, BaseException):  # EnrichError 及其它异常（gather 返回值）
                 deads.append({"stage": "enrich", "reason": str(v), "item": it})
+                log.warning("enrich 死信原因 url=%s: %s", it.get("url"), v)
                 stats["dead_letter"] += 1
             else:
                 if not v.keep:

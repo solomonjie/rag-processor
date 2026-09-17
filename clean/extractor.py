@@ -162,7 +162,9 @@ def extract_record(rec: dict) -> dict:
     else:
         raise ExtractError("missing_content")
 
-    if len(content) < 50:
+    # 契约 §4.1 建议正文 500~2000 字；<300 基本必是抽取失败（如 OCR 只抓到
+    # 微信导语）或纯垃圾页，按垃圾丢弃不进死信、不花 LLM
+    if len(content) < 300:
         raise ExtractError("content_too_short")
 
     # ---- 标题 ----
